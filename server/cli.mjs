@@ -5,6 +5,7 @@ import { openDb } from './db.mjs'
 import { createStore } from './store.mjs'
 import { loadConfig, saveConfig, maskToken, DB_PATH } from './config.mjs'
 import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline } from './ops.mjs'
+import { setupWorkspace, getWorkspacePrompt, cleanupWorkspace } from './ops.mjs'
 import { startAgentRun, retryAndDispatch, waitForAgentRun } from './agent.mjs'
 import { saveUpload } from './uploads.mjs'
 
@@ -84,6 +85,14 @@ const OPTIONS = {
   'local-path': { type: 'string' },
   'gitlab-project': { type: 'string' },
   tags: { type: 'string' },
+  'repo-id': { type: 'string' },
+  'repo-ids': { type: 'string' },
+  'worktree-path': { type: 'string' },
+  'base-branch': { type: 'string' },
+  // 用 --keep-branch 而不是 --remove-branch false：
+  // parseArgs 的 boolean 选项无法表达「显式 false」（`--x false` 会把 false 当位置参数、
+  // `--x=false` 直接抛错），会导致开关形同虚设、与 HTTP/MCP 的 removeBranch:false 不一致（D3）。
+  'keep-branch': { type: 'boolean' },
   'test-branch': { type: 'string' },
   'pre-branch': { type: 'string' },
   'release-branch': { type: 'string' },
@@ -111,6 +120,8 @@ const HELP = `task-board <命令>
   node diffs <ref> [--scope self|subtree]   节点（含子树）聚合 diff（含来源节点）
   node tracks <ref> [--scope self|subtree]  节点（含子树）分支合并状态聚合
   repo list
+  unit repo list <ref>                                   工作单元登记的涉及仓库
+  unit prompt <ref>                  生成 / 刷新开发提示词（纯读）
   config get
 
 写入（默认 actor=cli，可用 --actor ai|user）
@@ -172,6 +183,11 @@ const HELP = `task-board <命令>
   agent run update <rid> --status success|failed|timeout|cancelled [--exit-code N] [--failure-reason r] [--cli-session s] [--work-dir d]
   repo add --name <名> [--local-path <路径>] [--gitlab-project <路径>] [--tags 前端,后端]
   repo update <名|id> [--local-path p] [--tags t] [--test-branch b] [--pre-branch b] [--release-branch b]
+  unit repo add <ref> --repo-id <id> [--branch b] [--worktree-path p]   登记工作单元涉及仓库
+  unit repo remove <urid>
+  unit setup <ref> [--repo-ids "1,2"] [--branch b] [--base-branch b] [--dry-run]
+                                    创建工作区（分支 + worktree）并返回开发提示词
+  unit cleanup <ref> --confirm [--keep-branch]   清理工作区（移除 worktree / 删除已并入基线的分支）
   branch-config list                 标签级追踪目标列表（测试/预发/上线）
   branch-config set <标签> [--test-branch b] [--pre-branch b] [--release-branch b]
   branch-config remove <标签>
@@ -777,6 +793,54 @@ export async function run(argv) {
       break
     case 'repo list':
       json(store.listRepos())
+      break
+    // ---------- 工作区准备（分支 / worktree / 开发提示词） ----------
+    // `unit repo <list|add|remove> ...`：switch key 只有两段，子命令落在 ref
+    case 'unit repo': {
+      const sub = ref
+      const arg = positionals[3]
+      if (sub === 'list') {
+        if (!arg) throw new Error('unit repo list 需要 <ref>')
+        json(store.listUnitRepos(store.resolveRef(arg).id))
+      } else if (sub === 'add') {
+        if (!arg) throw new Error('unit repo add 需要 <ref>')
+        const repoIdsRaw = values['repo-ids'] ?? values['repo-id']
+        const ids = String(repoIdsRaw || '').split(',').map((s) => Number(s.trim())).filter(Boolean)
+        if (ids.length === 0) throw new Error('unit repo add 需要 --repo-id <id>')
+        const out = []
+        for (const rid of ids) {
+          out.push(store.addUnitRepo(store.resolveRef(arg).id, { repoId: rid, branch: values.branch, worktreePath: values['worktree-path'] }, by))
+        }
+        json(out.length === 1 ? out[0] : out)
+      } else if (sub === 'remove') {
+        if (!arg) throw new Error('unit repo remove 需要 <urid>')
+        json(store.deleteUnitRepo(Number(arg)))
+      } else {
+        throw new Error(`unit repo 支持 list|add|remove，收到：${sub}`)
+      }
+      break
+    }
+    case 'unit setup': {
+      const ids = values['repo-ids'] ? String(values['repo-ids']).split(',').map((s) => Number(s.trim())).filter(Boolean) : null
+      json(await setupWorkspace(store, ref, {
+        repoIds: ids,
+        branch: values.branch,
+        baseBranch: values['base-branch'],
+        dryRun: !!values['dry-run'],
+        by
+      }))
+      break
+    }
+    case 'unit prompt':
+      json(getWorkspacePrompt(store, ref))
+      break
+    case 'unit cleanup':
+      json(await cleanupWorkspace(store, ref, {
+        confirm: !!values.confirm,
+        // --keep-branch 表示「保留分支」；缺省是删除已并入基线的分支
+        removeBranch: !values['keep-branch'],
+        by
+      }))
       break
     case 'repo add':
       json(store.addRepo({ name: values.name, localPath: values['local-path'], gitlabProject: values['gitlab-project'], tags: values.tags, testBranch: values['test-branch'], preBranch: values['pre-branch'], releaseBranch: values['release-branch'] }))

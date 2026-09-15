@@ -1,7 +1,10 @@
 import { CODES, AppError } from './errors.mjs'
 import { CHILD_TYPES } from './db.mjs'
+import path from 'node:path'
 import { startAgentRun } from './agent.mjs'
 import { resolveRepoDir, commitDiff as gitCommitDiff, commitStat as gitCommitStat, commitTrack as gitCommitTrack, commitTime as gitCommitTime, commitMeta as gitCommitMeta, showFileAt as gitShowFileAt, commitParents as gitCommitParents, patchId as gitPatchId, mergedInCommits as gitMergedInCommits, branchesContaining as gitBranchesContaining, branchContains as gitBranchContains, mergeBranch as gitMergeBranch, previewMerge as gitPreviewMerge, branchLogShas as gitBranchLogShas, commitMetasBatch as gitCommitMetasBatch } from './git.mjs'
+import { addWorktree as gitAddWorktree, removeWorktree as gitRemoveWorktree, deleteLocalBranch as gitDeleteLocalBranch, checkWorktreePlan as gitCheckWorktreePlan } from './git.mjs'
+import { loadConfig } from './config.mjs'
 
 /** 能力清单：MCP 工具 / CLI 命令 / REST 路由 三者 1:1 对应 */
 export const TOOLS = [
@@ -82,6 +85,12 @@ export const TOOLS = [
   'repo_add',
   'repo_update',
   'repo_remove',
+  'unit_repo_list',
+  'unit_repo_add',
+  'unit_repo_remove',
+  'unit_setup',
+  'unit_prompt',
+  'unit_cleanup',
   'import_outline',
   'batch',
   'config_get',
@@ -1161,6 +1170,363 @@ export function applyDesignOutline(store, nodeRef, { scope = 'self', overwrite =
     overwrite: !!overwrite,
     written: results.filter((r) => r.written).length,
     skipped: results.filter((r) => !r.written).length,
+    results
+  }
+}
+
+// ---------- 工作区准备（分支 / worktree / 开发提示词）----------
+
+const UNIT_TYPES = new Set(['group', 'task'])
+
+function assertUnit(store, nodeRef) {
+  const node = store.resolveRef(String(nodeRef))
+  if (!UNIT_TYPES.has(node.type)) {
+    throw new AppError(CODES.VALIDATION_FAILED, `只有任务组 / 子任务才能准备工作区，当前为 ${node.type}`, {
+      node: node.name,
+      type: node.type,
+      allowed: [...UNIT_TYPES]
+    })
+  }
+  return node
+}
+
+/**
+ * 解析工作区的基线分支：显式传入 > 工作单元自身 `base_branch` > 所属子需求分支。
+ * 需求分支取值与 merge-flow 对齐：优先节点自身/分支组的 `branch`，其次子需求 `branch`，
+ * 这样「分支从当前子需求分支派生」对两种数据形态都成立。
+ */
+function resolveBaseBranch(store, node, explicit) {
+  if (explicit) return explicit
+  const own = store.getAttrs(node.id) || {}
+  if (own.base_branch) return own.base_branch
+  const subreq = store.findAncestorOfType(node.id, 'subreq')
+  const subreqAttrs = subreq ? store.getAttrs(subreq.id) || {} : {}
+  return subreqAttrs.branch || subreqAttrs.reqBranch || null
+}
+
+/** 渲染分支名：`config.branchTemplate`（默认 `{base_branch}-{slug}`）；slug 为空退回 `n{id}` */
+export function renderBranchName(template, { baseBranch, slug, nodeId }) {
+  const t = template || '{base_branch}-{slug}'
+  const s = (slug && String(slug).trim()) || `n${nodeId}`
+  return String(t).replace(/\{base_branch\}/g, baseBranch || '').replace(/\{slug\}/g, s)
+}
+
+/** worktree 路径：`config.worktreeRoot`（缺省与主仓库同级）下 `<仓库目录名>-wt-<slug>` */
+export function renderWorktreePath(repoDir, worktreeRoot, slug, nodeId) {
+  const s = (slug && String(slug).trim()) || `n${nodeId}`
+  const name = `${path.basename(repoDir)}-wt-${s}`
+  const root = (worktreeRoot && String(worktreeRoot).trim()) || path.dirname(repoDir)
+  return path.join(root, name)
+}
+
+/**
+ * 生成**开发提示词**（可直接投喂 AI 的开工包）。
+ * 设计文档 §7.10 要求至少包含：节点路径与 id、涉及仓库与工作区路径、工作分支与基线、
+ * 文档清单、常用命令、提交与合并约定。
+ */
+export function composeWorkspacePrompt(store, node, { branch, baseBranch, repos, branchTemplate }) {
+  const docs = store.listDocuments(node.id).filter((d) => String(d.content || '').trim() !== '')
+  const lines = [
+    `# 工作区：${node.name}`,
+    '',
+    `- 节点：${node.path}（id=${node.id}，类型=${node.type}）`,
+    `- 工作分支：${branch}`,
+    `- 基线分支：${baseBranch}`,
+    `- 分支命名模板：${branchTemplate}`,
+    '',
+    '## 涉及仓库与工作区',
+    ''
+  ]
+  if (repos.length === 0) {
+    lines.push('_（尚未登记涉及仓库：先 `unit repo add` 再 `unit setup`）_')
+  } else {
+    lines.push('| 仓库 | 工作区路径 | 分支 | 状态 |', '|---|---|---|---|')
+    for (const r of repos) {
+      const state = r.ok === false ? `失败：${r.reason}` : r.alreadyExists ? '已存在（幂等跳过）' : '已创建'
+      lines.push(`| ${r.repo} | ${r.worktreePath || '-'} | ${r.branch || branch} | ${state} |`)
+    }
+  }
+  lines.push('', '## 该节点的文档', '')
+  if (docs.length === 0) lines.push('_（暂无有内容的文档）_')
+  else for (const d of docs) lines.push(`- ${d.name}（${String(d.content || '').length} 字）`)
+
+  lines.push(
+    '',
+    '## 常用命令',
+    '',
+    '```bash',
+    `node bin/taskboard.js node get "${node.path}"`,
+    `node bin/taskboard.js doc list "${node.path}"`,
+    `node bin/taskboard.js commit add "${node.path}" --sha <sha> --repo <仓库> --note "<说明>"`,
+    `node bin/taskboard.js merge run "${node.path}"        # 合并回子需求分支`,
+    '```',
+    '',
+    '## 提交与合并约定',
+    '',
+    '- 提交信息用 Conventional Commits：`type(scope): 描述`，scope 取功能目录名',
+    `- 在工作分支 \`${branch}\` 上开发，提交后回到本节点登记 commit（含 branch），供交付门禁判定推送状态`,
+    `- 完成后合并回子需求分支 \`${baseBranch}\`（显式触发、不 push），再按需 \`unit cleanup\``,
+    '- 合并后默认**保留**工作区与分支，避免 Diff 入口消失；清理需显式 confirm'
+  )
+  return lines.join('\n')
+}
+
+/**
+ * 准备工作区（三入口共用）：逐仓库建分支 + worktree，回填 unit_repos 与节点属性，返回开发提示词。
+ *
+ * - `dryRun` 只做规划（渲染分支名与路径、检查仓库可用性），**不碰本机 git、不落库**；
+ * - 分支名与基线由 `resolveBaseBranch` / `renderBranchName` 决定，多仓库共用同一个分支名（决策 24）；
+ * - 基线不一致时抛 `BRANCH_EXISTS_DIFFERENT_BASE`（不静默复用，避免开发分支挂到错误基线）；
+ * - 任一路径被占用抛 `WORKTREE_PATH_EXISTS`；
+ * - 组合写入（unit_repos + 属性）合并为一次 revision 递增。
+ */
+export async function setupWorkspace(store, nodeRef, { repoIds = null, branch = null, baseBranch = null, dryRun = false, by = 'user' } = {}) {
+  const node = assertUnit(store, nodeRef)
+  const config = loadConfig()
+  const base = resolveBaseBranch(store, node, baseBranch)
+  if (!base) {
+    throw new AppError(CODES.VALIDATION_FAILED, '未配置基线分支（请填工作单元 base_branch 或所属子需求 branch）', { node: node.name })
+  }
+  const attrs = store.getAttrs(node.id) || {}
+  const branchName = branch || attrs.branch || renderBranchName(config.branchTemplate, { baseBranch: base, slug: attrs.slug, nodeId: node.id })
+
+  const all = store.listUnitRepos(node.id)
+  const selected = repoIds && repoIds.length ? all.filter((u) => repoIds.map(Number).includes(u.repoId)) : all
+  if (all.length === 0) {
+    throw new AppError(CODES.VALIDATION_FAILED, '该工作单元尚未登记涉及仓库（先单元登记仓库）', { node: node.name })
+  }
+  if (selected.length === 0) {
+    throw new AppError(CODES.VALIDATION_FAILED, '选中的仓库不在该工作单元的登记列表里', { repoIds })
+  }
+
+  const repos = []
+  for (const ur of selected) {
+    const repoRow = store.listRepos().find((r) => r.id === ur.repoId)
+    if (!repoRow) {
+      repos.push({ repoId: ur.repoId, repo: ur.repoName, ok: false, reason: 'repo-not-registered' })
+      continue
+    }
+    let dir
+    try {
+      dir = resolveRepoDir(repoRow)
+    } catch (e) {
+      repos.push({ repoId: repoRow.id, repo: repoRow.name, ok: false, reason: e.code === CODES.REPO_PATH_MISSING ? 'repo-path-missing' : 'repo-not-registered' })
+      continue
+    }
+    const worktreePath = ur.worktreePath || renderWorktreePath(dir, config.worktreeRoot, attrs.slug, node.id)
+    if (dryRun) {
+      // 复用与真跑同一份只读探查，让「预演」真的能报出占用/基线冲突（D4）
+      const plan = await gitCheckWorktreePlan(dir, { worktreePath, branch: branchName, baseBranch: base })
+      if (!plan.ok) {
+        repos.push({
+          repoId: repoRow.id,
+          repo: repoRow.name,
+          repoDir: dir,
+          worktreePath,
+          branch: branchName,
+          baseBranch: base,
+          ok: false,
+          planned: true,
+          reason: plan.reason,
+          message: plan.message || null
+        })
+        continue
+      }
+      repos.push({
+        repoId: repoRow.id,
+        repo: repoRow.name,
+        repoDir: dir,
+        worktreePath,
+        branch: branchName,
+        baseBranch: base,
+        ok: true,
+        planned: true,
+        alreadyExists: !!plan.alreadyExists,
+        branchExists: !!plan.branchExists
+      })
+      continue
+    }
+    const r = await gitAddWorktree(dir, { worktreePath, branch: branchName, baseBranch: base })
+    if (!r.ok) {
+      if (r.reason === 'path-occupied') {
+        throw new AppError(CODES.WORKTREE_PATH_EXISTS, `worktree 路径已被占用（且非分支 ${branchName}）：${worktreePath}`, {
+          repo: repoRow.name,
+          worktreePath,
+          branch: branchName
+        })
+      }
+      if (r.reason === 'base-not-found') {
+        throw new AppError(CODES.BRANCH_NOT_FOUND, `基线分支不存在：${base}`, { repo: repoRow.name, baseBranch: base })
+      }
+      if (r.reason === 'base-mismatch') {
+        // 由 checkWorktreePlan 在**任何 git 写操作之前**判定，拒绝时不会留下 worktree（D1）
+        throw new AppError(
+          CODES.BRANCH_EXISTS_DIFFERENT_BASE,
+          `分支 ${branchName} 已存在但基线不是 ${base}（如需复用请显式确认）`,
+          { repo: repoRow.name, branch: branchName, baseBranch: base, branchSha: r.branchSha }
+        )
+      }
+      throw new AppError(CODES.GIT_FAILED, `创建 worktree 失败：${repoRow.name}`, { repo: repoRow.name, stderr: r.message })
+    }
+    repos.push({
+      repoId: repoRow.id,
+      repo: repoRow.name,
+      repoDir: dir,
+      worktreePath,
+      branch: branchName,
+      baseBranch: base,
+      ok: true,
+      created: !!r.created,
+      branchReused: !!r.branchReused,
+      alreadyExists: !!r.alreadyExists
+    })
+  }
+
+  const prompt = composeWorkspacePrompt(store, node, {
+    branch: branchName,
+    baseBranch: base,
+    repos,
+    branchTemplate: config.branchTemplate
+  })
+
+  if (dryRun) {
+    return {
+      dryRun: true,
+      node: { id: node.id, name: node.name, path: node.path },
+      branch: branchName,
+      baseBranch: base,
+      repos,
+      prompt
+    }
+  }
+
+  // 回填 unit_repos 与节点属性（组合写入 = 一次 revision）。
+  // 先算「是否真的有变化」：纯 no-op 重复调用不 bump，避免制造无意义的 revision 噪声（D5）。
+  const pending = []
+  for (const r of repos) {
+    if (r.ok === false) continue
+    const ur = store.listUnitRepos(node.id).find((u) => u.repoId === r.repoId)
+    if (ur && (ur.branch !== branchName || ur.worktreePath !== r.worktreePath)) {
+      pending.push({ id: ur.id, worktreePath: r.worktreePath })
+    }
+  }
+  const branchChanged = attrs.branch !== branchName
+  const baseChanged = !attrs.base_branch
+  const changed = pending.length > 0 || branchChanged || baseChanged
+  if (changed) {
+    store.withoutBump(() => {
+      for (const p of pending) {
+        store.updateUnitRepo(p.id, { branch: branchName, worktreePath: p.worktreePath })
+      }
+      if (branchChanged) store.setAttrs(node.id, { branch: branchName }, by)
+      if (baseChanged) store.setAttrs(node.id, { base_branch: base }, by)
+    })
+    store.bumpRevision()
+  }
+
+  return {
+    dryRun: false,
+    node: { id: node.id, name: node.name, path: node.path },
+    branch: branchName,
+    baseBranch: base,
+    repos,
+    prompt
+  }
+}
+
+/** 生成 / 刷新开发提示词（纯读，不碰 git、不落库） */
+export function getWorkspacePrompt(store, nodeRef) {
+  const node = assertUnit(store, nodeRef)
+  const config = loadConfig()
+  const attrs = store.getAttrs(node.id) || {}
+  const base = resolveBaseBranch(store, node, attrs.base_branch || null)
+  const branch = attrs.branch || renderBranchName(config.branchTemplate, { baseBranch: base, slug: attrs.slug, nodeId: node.id })
+  const repos = store.listUnitRepos(node.id).map((u) => ({
+    repoId: u.repoId,
+    repo: u.repoName,
+    branch: u.branch || branch,
+    worktreePath: u.worktreePath,
+    ok: true
+  }))
+  return {
+    node: { id: node.id, name: node.name, path: node.path },
+    branch,
+    baseBranch: base,
+    repos,
+    prompt: composeWorkspacePrompt(store, node, { branch, baseBranch: base, repos, branchTemplate: config.branchTemplate })
+  }
+}
+
+/**
+ * 清理工作区：移除各仓库 worktree，并尝试删除「已并入基线」的分支。
+ * 默认策略是**合并后保留**，因此这是显式动作；`confirm` 是硬性校验（与删除/移动同口径）。
+ * 未并入的分支不删（git `-d` 会自动拒绝），回报 `branch-not-merged` 供人工决定。
+ */
+export async function cleanupWorkspace(store, nodeRef, { confirm = false, removeBranch = true, by = 'user' } = {}) {
+  const node = assertUnit(store, nodeRef)
+  if (!confirm) {
+    throw new AppError(CODES.CONFIRM_REQUIRED, '清理工作区需要 confirm（会移除 worktree，并可能删除分支）', { node: node.name })
+  }
+  const attrs = store.getAttrs(node.id) || {}
+  const base = resolveBaseBranch(store, node, attrs.base_branch || null)
+  const branchName = attrs.branch || null
+  const unitRepos = store.listUnitRepos(node.id)
+  const results = []
+  for (const ur of unitRepos) {
+    const repoRow = store.listRepos().find((r) => r.id === ur.repoId)
+    const out = { repoId: ur.repoId, repo: ur.repoName, worktreePath: ur.worktreePath, branch: ur.branch || branchName }
+    if (!repoRow || !repoRow.localPath) {
+      results.push({ ...out, ok: false, reason: 'repo-not-registered' })
+      continue
+    }
+    let dir
+    try {
+      dir = resolveRepoDir(repoRow)
+    } catch (e) {
+      results.push({ ...out, ok: false, reason: 'repo-path-missing' })
+      continue
+    }
+    if (ur.worktreePath) {
+      const rm = await gitRemoveWorktree(dir, ur.worktreePath)
+      out.worktreeRemoved = !!rm.ok
+      if (!rm.ok) {
+        results.push({ ...out, ok: false, reason: rm.reason, message: rm.message })
+        continue
+      }
+      out.worktreeAlreadyRemoved = !!rm.alreadyRemoved
+    } else {
+      // 上一次 cleanup 已清空 worktree_path：本次视为「已移除」，保证重复调用幂等可观测
+      out.worktreeAlreadyRemoved = true
+    }
+    if (removeBranch && branchName && base) {
+      // 传入声明基线：删除判定必须相对基线，而不是当前 HEAD（D2）
+      const del = await gitDeleteLocalBranch(dir, branchName, { baseBranch: base })
+      out.branchRemoved = !!del.ok && !!del.removed
+      if (!del.ok) out.branchNote = del.reason
+    } else if (!removeBranch) {
+      // 显式保留分支：如实回报「没删」，避免调用方把 undefined 当成未知
+      out.branchRemoved = false
+      out.branchNote = 'kept_by_request'
+    }
+    results.push({ ...out, ok: true })
+  }
+
+  store.withoutBump(() => {
+    for (const r of results) {
+      if (r.ok !== true) continue
+      const ur = store.listUnitRepos(node.id).find((u) => u.repoId === r.repoId)
+      if (ur) store.updateUnitRepo(ur.id, { worktreePath: null })
+    }
+    if (attrs.branch) store.setAttrs(node.id, { branch: '' }, by)
+  })
+  store.bumpRevision()
+
+  return {
+    node: { id: node.id, name: node.name, path: node.path },
+    branch: branchName,
+    baseBranch: base,
+    removeBranch: !!removeBranch,
+    removed: results.filter((r) => r.worktreeRemoved || r.worktreeAlreadyRemoved).length,
     results
   }
 }

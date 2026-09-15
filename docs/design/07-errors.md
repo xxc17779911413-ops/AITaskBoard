@@ -21,8 +21,8 @@
 | 同一节点重复登记同一 sha | 幂等，返回已存在记录 |
 | 仓库未登记 / 本地路径不存在 | 400 `REPO_NOT_REGISTERED` / `REPO_PATH_MISSING`，提示先登记仓库 |
 | 分支不存在（工作单元或集成分支） | 400 `BRANCH_NOT_FOUND` |
-| 分支已存在但基线不同 | 400 `BRANCH_EXISTS_DIFFERENT_BASE`，提示确认或改用其他分支名 |
-| worktree 路径已被占用 | 409 `WORKTREE_PATH_EXISTS` |
+| 分支已存在但基线不同 | 400 `BRANCH_EXISTS_DIFFERENT_BASE`，提示确认或改用其他分支名。**判定用 tip 相等**：分支比基线更旧（祖先）或已领先都不算一致——前者会让开发者从过期代码开工，后者含未合并成果，都不静默复用 |
+| worktree 路径已被占用 | 409 `WORKTREE_PATH_EXISTS`（被其他分支的 worktree 或同名普通目录占用；同分支同路径走幂等跳过） |
 | 合并预检有冲突 | 返回 `precheck_conflict` + 冲突文件（**不改工作区、不落分支**），进入冲突处理 |
 | 本机 git 不可用 / 命令失败 | 500 `GIT_UNAVAILABLE` / `GIT_FAILED`（`details` 带原始 stderr） |
 | GitLab 未配置 | 400 + 「前往设置页配置」提示 |

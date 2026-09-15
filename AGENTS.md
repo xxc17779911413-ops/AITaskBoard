@@ -103,6 +103,7 @@ docs/design.md    ← 主设计文档权威副本
       doc_upsert · doc_create · doc_update · doc_remove · doc_reorder · doc_version_list · doc_version_restore
       commit_add · commit_remove · repo_add · repo_update · repo_remove · config_set
       upload_image
+工作区  unit_repo_list · unit_repo_add · unit_repo_remove · unit_setup · unit_prompt · unit_cleanup
 批量  batch · import_outline
 门禁  requirement_readiness · mindmap · delivery_gate
 设计  design_outline · design_outline_apply
@@ -132,6 +133,10 @@ node upsert --path "项目A/需求1"        # get-or-create，幂等
 attr set "项目A/需求1" status=doing     # 单项属性更新
 doc upsert "项目A/需求1" --name 需求内容 --file desc.md   # 按文档名幂等
 upload ./shot.png                                      # 上传文档图片 → { url: "/uploads/<name>" }
+unit repo add "项目A/需求1/任务1" --repo-id 1          # 登记工作单元涉及仓库
+unit setup "项目A/需求1/任务1" [--dry-run]              # 建分支 + worktree，返回开发提示词
+unit prompt "项目A/需求1/任务1"                         # 生成 / 刷新开发提示词（纯读）
+unit cleanup "项目A/需求1/任务1" --confirm [--keep-branch]   # 清理工作区（未并入「声明基线」的分支会保留）
 import --file outline.md --dry-run     # 大纲导入，先预演
 batch --file ops.json                  # 多步一次调用
 node delete <ref> --confirm            # 破坏性操作必须 --confirm

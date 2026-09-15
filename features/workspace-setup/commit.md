@@ -1,7 +1,9 @@
 # 工作区准备功能提交记录
 
-> 状态：**未实现**（计划 4）。
+> 状态：**已实现**（计划 4）。
 
 - docs(workspace-setup): 建立功能文档 —— prd（需求 + 接口表 + 验收标准）、design（分支命名 / 派生基线 / 多仓库 / 提示词）
-
-（待实现后按约定逐行追加 commit message）
+- feat(workspace-setup): 工作区准备闭环——store 新增 unit_repos CRUD（按 node × repo 幂等、只更新显式字段、级联删除、仅 group/task 可登记）；git.mjs 新增 revParse / localBranchSha / listWorktrees / worktreeOccupancy / addWorktree / removeWorktree / deleteLocalBranch（含 macOS `/tmp`→`/private/tmp` 符号链接的 realpath 归一，否则幂等复用会误报 409）；ops 新增 setupWorkspace（逐仓库建分支 + worktree、分支从子需求分支当前 tip 派生、dryRun 只规划、分支基线不一致报 BRANCH_EXISTS_DIFFERENT_BASE、路径占用报 WORKTREE_PATH_EXISTS）+ getWorkspacePrompt（纯读开发提示词）+ cleanupWorkspace（需 confirm；未并入基线的分支保留）；三入口 1:1（HTTP 5 条路由 / CLI `unit repo|setup|prompt|cleanup` / MCP 6 个工具并登记能力清单）
+- test(workspace-setup): 24 条 UT——store CRUD 与类型约束、分支名/路径渲染纯函数、真 git 下的建/幂等/dryRun/基线不符/路径占用/清理（含「未合并分支必须保留」）、三入口 1:1 与逐字段一致；`npm test` 376/376、`npm run build` 通过
+- fix(workspace-setup): 按独立验收报告返工 D1–D5——① **D1（严重，安全保证可被绕过）** 基线校验前置：新增只读 `checkWorktreePlan()`，`addWorktree` 先拿结论再动手，同名分支 tip≠基线时**在任何 git 写操作之前**返回 `base-mismatch`。旧实现是「先 worktree add、后比对 tip」，首次报错却已留下 worktree，重试时 occupancy 变 `same` 直接 `alreadyExists`，把「不静默复用」整段跳过并回填错误基线的分支 ② **D2（严重，数据丢失）** 删分支改为 `git merge-base --is-ancestor <branch> <baseBranch>` 相对**声明基线**判定，不再用 `git branch -d`（它比的是当前 HEAD）：旧实现会删掉「已并入 HEAD(main) 但未并入基线」的未合并分支，反向「已并入基线但基线领先 HEAD」又被保守误判；显式保留分支时如实回报 `branchRemoved:false` + `kept_by_request` ③ **D3** CLI `--remove-branch false` 在 parseArgs 下恒失效（boolean 无法表达显式 false），改为正向开关 `--keep-branch`，与 HTTP/MCP 的 `removeBranch:false` 语义对齐 ④ **D4** dryRun 复用同一份只读探查，能报出 `path-occupied` / `base-mismatch`，预演与真跑同结论且仍零副作用 ⑤ **D5** 纯 no-op 重复 setup 不再 bump revision（先算是否有变化再写入）
+- test(workspace-setup): 补 D1–D5 回归 UT（24 → 31 条），并**修正夹具几何**——原夹具让 HEAD(main)、基线、工作分支停在同一个 commit，`git branch -d` 与 `merge-base --is-ancestor <branch> <base>` 结论完全一致，「并入 HEAD 但未并入基线」在几何上无法表达，这正是 D2 逃过 383 条全绿的原因；现夹具强制 **HEAD ≠ 基线**，并新增「拒绝后重试仍拒绝」「已并入基线但基线领先 HEAD 时正常删除」「--keep-branch 保留分支」「三入口 removeBranch 语义一致」等用例；9 条受影响用例已用旧实现逐一验证必失败；`npm test` 383/383、`npm run build`、`npm run e2e:mainline` 全绿

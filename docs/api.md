@@ -356,6 +356,57 @@ curl -s -X PUT http://127.0.0.1:3210/api/config \
 curl -s -X POST http://127.0.0.1:3210/api/config/gitlab/test
 ```
 
+## 工作区准备（分支 / worktree / 开发提示词）
+
+工作单元（`group` / `task`）登记涉及仓库后，一次调用在**每个仓库**建出同名分支 + 各自 worktree；
+分支从**所属子需求分支的当前最新提交**派生（不是登记时刻的快照）。
+
+```bash
+# 登记工作单元涉及仓库（按 node × repo 幂等）
+curl -s -X POST http://127.0.0.1:3210/api/nodes/9/unit-repos \
+  -H 'content-type: application/json' -d '{"repoId":1}'
+curl -s http://127.0.0.1:3210/api/nodes/9/unit-repos
+
+# 先预演（不碰 git、不落库）
+curl -s -X POST http://127.0.0.1:3210/api/nodes/9/setup \
+  -H 'content-type: application/json' -d '{"dryRun":true}'
+
+# 真正创建：返回 { branch, baseBranch, repos:[{repo, worktreePath}], prompt }
+curl -s -X POST http://127.0.0.1:3210/api/nodes/9/setup \
+  -H 'content-type: application/json' -d '{}'
+
+# 生成 / 刷新开发提示词（纯读，可直接投喂 AI）
+curl -s http://127.0.0.1:3210/api/nodes/9/prompt
+
+# 清理（需 confirm；未并入基线的分支会保留）
+curl -s -X POST http://127.0.0.1:3210/api/nodes/9/cleanup \
+  -H 'content-type: application/json' -d '{"confirm":true}'
+
+# CLI / MCP 等价入口
+# node bin/taskboard.js unit setup "项目A/需求1/任务1" [--dry-run]
+# node bin/taskboard.js unit prompt "项目A/需求1/任务1"
+# node bin/taskboard.js unit cleanup "项目A/需求1/任务1" --confirm [--keep-branch]
+# MCP: unit_setup / unit_prompt / unit_cleanup
+```
+
+分支名由 `config.branchTemplate` 渲染（默认 `{base_branch}-{slug}`，`slug` 为空退回 `n{id}`）；
+worktree 路径为 `config.worktreeRoot`（缺省与主仓库同级）下 `<仓库目录名>-wt-<slug>`。
+
+清理的删除判定**相对声明的基线分支**（`git merge-base --is-ancestor <branch> <base>`），
+不是相对当前 HEAD——`git branch -d` 会把「已并入 HEAD 但未并入基线」的分支也删掉。
+未并入基线的分支一律保留并回报 `branchNote: 'branch-not-merged'`；
+HTTP / MCP 传 `removeBranch: false`、CLI 传 `--keep-branch` 可显式保留分支（回报 `kept_by_request`）。
+
+失败语义（都可按码自纠）：
+
+| HTTP | code | 场景 |
+|---|---|---|
+| 409 | `WORKTREE_PATH_EXISTS` | 目标路径已被**其他分支**的 worktree 或同名普通目录占用 |
+| 400 | `BRANCH_EXISTS_DIFFERENT_BASE` | 同名分支已存在但 tip 不等于基线（含「更旧」与「已领先」两种）。**在任何 git 写操作之前判定**，拒绝时零副作用，重试仍拒绝 |
+| 400 | `BRANCH_NOT_FOUND` | 基线分支不存在（先确认子需求分支已建） |
+| 400 | `CONFIRM_REQUIRED` | `cleanup` 未带 `confirm: true` |
+| 400 | `VALIDATION_FAILED` | 非 `group` / `task` 节点、未登记涉及仓库、`repoId` 不在列表里 |
+
 ## agent 运行时 / 会话 / 任务
 
 三层模型：**运行时（机器级执行环境）→ 会话（可续跑的连续对话）→ 任务（一次执行）**，

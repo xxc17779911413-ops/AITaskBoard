@@ -2,6 +2,7 @@ import express from 'express'
 import fs from 'node:fs'
 import { AppError, CODES } from './errors.mjs'
 import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, approveAndMerge, getMergeStatus, previewMerges, mergeUpstream, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline } from './ops.mjs'
+import { setupWorkspace, getWorkspacePrompt, cleanupWorkspace } from './ops.mjs'
 import { startAgentRun, retryAndDispatch } from './agent.mjs'
 import { resolveRepoDir, pickBranchForCommit } from './git.mjs'
 import { loadConfig, saveConfig, maskToken, UPLOAD_DIR } from './config.mjs'
@@ -1027,6 +1028,60 @@ export function createApp({ store }) {
   )
 
   // ---------- 仓库登记 ----------
+
+  // ---------- 工作区准备（分支 / worktree / 开发提示词） ----------
+  app.get(
+    '/api/nodes/:id/unit-repos',
+    wrap((req, res) => {
+      const node = store.resolveRef(refOf(req))
+      res.json(store.listUnitRepos(node.id))
+    })
+  )
+  app.post(
+    '/api/nodes/:id/unit-repos',
+    wrap((req, res) => {
+      const node = store.resolveRef(refOf(req))
+      const b = req.body || {}
+      res.status(201).json(store.addUnitRepo(node.id, { repoId: b.repoId, branch: b.branch, worktreePath: b.worktreePath }, actorOf(req)))
+    })
+  )
+  app.delete(
+    '/api/unit-repos/:urid',
+    wrap((req, res) => res.json(store.deleteUnitRepo(Number(req.params.urid))))
+  )
+  app.post(
+    '/api/nodes/:id/setup',
+    wrap(async (req, res) => {
+      const node = store.resolveRef(refOf(req))
+      const b = req.body || {}
+      res.json(await setupWorkspace(store, node.id, {
+        repoIds: b.repoIds,
+        branch: b.branch,
+        baseBranch: b.baseBranch,
+        dryRun: !!b.dryRun,
+        by: actorOf(req)
+      }))
+    })
+  )
+  app.get(
+    '/api/nodes/:id/prompt',
+    wrap((req, res) => {
+      const node = store.resolveRef(refOf(req))
+      res.json(getWorkspacePrompt(store, node.id))
+    })
+  )
+  app.post(
+    '/api/nodes/:id/cleanup',
+    wrap(async (req, res) => {
+      const node = store.resolveRef(refOf(req))
+      const b = req.body || {}
+      res.json(await cleanupWorkspace(store, node.id, {
+        confirm: !!b.confirm,
+        removeBranch: b.removeBranch !== false,
+        by: actorOf(req)
+      }))
+    })
+  )
 
   app.get('/api/repos', wrap((req, res) => res.json(store.listRepos())))
   app.post(

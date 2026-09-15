@@ -3022,6 +3022,112 @@ export function createStore(db, options = {}) {
     return { id }
   }
 
+  // ---------- 工作单元仓库关联（unit_repos：node × repo）----------
+
+  /** 工作单元 = 可拥有自己开发分支的节点；项目 / 需求 / 子需求不参与工作区分支 */
+  const UNIT_TYPES = new Set(['group', 'task'])
+
+  function assertUnitNode(nodeId) {
+    const node = rawNode(nodeId)
+    if (!UNIT_TYPES.has(node.type)) {
+      throw new AppError(CODES.VALIDATION_FAILED, `只有任务组 / 子任务才能登记工作区仓库，当前为 ${node.type}`, {
+        nodeId: node.id,
+        type: node.type,
+        allowed: [...UNIT_TYPES]
+      })
+    }
+    return node
+  }
+
+  function unitRepoVO(r) {
+    return {
+      id: r.id,
+      nodeId: r.node_id,
+      repoId: r.repo_id,
+      repoName: r.repo_name ?? null,
+      branch: r.branch,
+      worktreePath: r.worktree_path,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at
+    }
+  }
+
+  const UNIT_REPO_SELECT = `
+    SELECT ur.*, r.name AS repo_name
+      FROM unit_repos ur LEFT JOIN repos r ON r.id = ur.repo_id`
+
+  function listUnitRepos(nodeId) {
+    rawNode(nodeId)
+    return db.prepare(`${UNIT_REPO_SELECT} WHERE ur.node_id = ? ORDER BY ur.id`).all(nodeId).map(unitRepoVO)
+  }
+
+  function getUnitRepo(id) {
+    const r = db.prepare(`${UNIT_REPO_SELECT} WHERE ur.id = ?`).get(id)
+    if (!r) throw new AppError(CODES.NOT_FOUND, `工作单元仓库 ${id} 不存在`, { id })
+    return unitRepoVO(r)
+  }
+
+  /**
+   * 登记工作单元涉及仓库（按 node × repo 幂等 upsert）。
+   * 已存在时只更新显式传入的字段——与 release item / test case 的 upsert 同一条
+   * 「覆盖 vs 保留」纪律，避免只改一个字段把另一字段静默清空。
+   */
+  function addUnitRepo(nodeId, { repoId, branch = undefined, worktreePath = undefined } = {}, by = 'user') {
+    assertUnitNode(nodeId)
+    const rid = Number(repoId)
+    if (!rid) throw new AppError(CODES.VALIDATION_FAILED, 'repoId 必填', { field: 'repoId' })
+    const repo = db.prepare('SELECT * FROM repos WHERE id = ?').get(rid)
+    if (!repo) throw new AppError(CODES.REPO_NOT_REGISTERED, `仓库 ${repoId} 未登记（先 repo add）`, { repoId: rid })
+
+    const ts = now()
+    const existing = db.prepare('SELECT * FROM unit_repos WHERE node_id = ? AND repo_id = ?').get(nodeId, rid)
+    if (existing) {
+      const patch = {}
+      if (branch !== undefined) patch.branch = branch
+      if (worktreePath !== undefined) patch.worktree_path = worktreePath
+      if (Object.keys(patch).length === 0) return unitRepoVO(db.prepare(`${UNIT_REPO_SELECT} WHERE ur.id = ?`).get(existing.id))
+      const fields = Object.keys(patch).map((k) => `${k} = ?`)
+      db.prepare(`UPDATE unit_repos SET ${fields.join(', ')}, updated_at = ? WHERE id = ?`).run(...Object.values(patch), ts, existing.id)
+      bumpRevision()
+      return unitRepoVO(db.prepare(`${UNIT_REPO_SELECT} WHERE ur.id = ?`).get(existing.id))
+    }
+
+    const info = db
+      .prepare('INSERT INTO unit_repos (node_id,repo_id,branch,worktree_path,created_at,updated_at) VALUES (?,?,?,?,?,?)')
+      .run(nodeId, rid, branch ?? null, worktreePath ?? null, ts, ts)
+    bumpRevision()
+    return unitRepoVO(db.prepare(`${UNIT_REPO_SELECT} WHERE ur.id = ?`).get(Number(info.lastInsertRowid)))
+  }
+
+  function updateUnitRepo(id, patch = {}) {
+    const cur = db.prepare('SELECT * FROM unit_repos WHERE id = ?').get(id)
+    if (!cur) throw new AppError(CODES.NOT_FOUND, `工作单元仓库 ${id} 不存在`, { id })
+    const fields = []
+    const args = []
+    if (patch.branch !== undefined) {
+      fields.push('branch = ?')
+      args.push(patch.branch)
+    }
+    if (patch.worktreePath !== undefined) {
+      fields.push('worktree_path = ?')
+      args.push(patch.worktreePath)
+    }
+    if (fields.length === 0) return unitRepoVO(db.prepare(`${UNIT_REPO_SELECT} WHERE ur.id = ?`).get(id))
+    fields.push('updated_at = ?')
+    args.push(now(), id)
+    db.prepare(`UPDATE unit_repos SET ${fields.join(', ')} WHERE id = ?`).run(...args)
+    bumpRevision()
+    return unitRepoVO(db.prepare(`${UNIT_REPO_SELECT} WHERE ur.id = ?`).get(id))
+  }
+
+  function deleteUnitRepo(id) {
+    const cur = db.prepare('SELECT * FROM unit_repos WHERE id = ?').get(id)
+    if (!cur) throw new AppError(CODES.NOT_FOUND, `工作单元仓库 ${id} 不存在`, { id })
+    db.prepare('DELETE FROM unit_repos WHERE id = ?').run(id)
+    bumpRevision()
+    return { id }
+  }
+
   // ---------- 标签级分支配置（仓库通过 tags 继承） ----------
 
   function branchConfigVO(r) {
@@ -3215,6 +3321,12 @@ export function createStore(db, options = {}) {
     addRepo,
     updateRepo,
     deleteRepo,
+    // unit repos（工作单元 × 仓库：分支 + worktree）
+    listUnitRepos,
+    getUnitRepo,
+    addUnitRepo,
+    updateUnitRepo,
+    deleteUnitRepo,
     // branch configs（标签级）
     listBranchConfigs,
     upsertBranchConfig,
@@ -3222,6 +3334,8 @@ export function createStore(db, options = {}) {
     resolveBranchTargets,
     // revision
     getRevision,
-    bumpRevision
+    bumpRevision,
+    // 组合写入：把一组内部写入合并成一次 revision 递增（工作区准备/清理需要）
+    withoutBump
   }
 }

@@ -15,6 +15,9 @@
   - `git`：diff / log 读取、`merge-tree` 预检（构造真冲突用例）、merge 成功与失败、未登记仓库
   - `merges`：状态机（`precheck_conflict` → `resolved` / `merged`）、批量按序合并遇冲突停下、abort 不改分支
   - `conflicts`：三方内容读取、逐块接受 / 拒绝产出、补丁可 `git apply`
+  - `workspace-setup`：`unit_repos` CRUD（按 node × repo 幂等 / 只更新显式字段 / 级联删除 / 仅 `group`|`task` 可登记）；分支名与 worktree 路径渲染（`branchTemplate`，`slug` 空退回 `n{id}`）；真 git 下 `setupWorkspace` 建出同名分支 + worktree、**分支从基线当前 tip 派生**、重复调用幂等、`dryRun` 不碰 git 不落库不动 revision、基线不符 `BRANCH_EXISTS_DIFFERENT_BASE`、路径占用 `WORKTREE_PATH_EXISTS`、基线缺失 `BRANCH_NOT_FOUND`；`cleanupWorkspace` 需 confirm、移除 worktree、**未并入基线的分支必须保留**、重复调用幂等、一次操作只 +1 revision；三入口 1:1（HTTP / CLI / MCP）与逐字段一致；MCP `confirm` 缺失走 `isError + CONFIRM_REQUIRED` 不泄漏 `-32602`
+  - `workspace-setup` 回归（D1–D5，均以旧实现验证必失败）：**基线不符时拒绝且零副作用、重试仍拒绝**（D1）；**分支并入 HEAD 但未并入基线时必须保留**、已并入基线但基线领先 HEAD 时正常删除（D2，**夹具强制 HEAD ≠ 基线**）；`--keep-branch` 真正保留分支 + 三入口 `removeBranch` 语义一致（D3）；dryRun 能探明路径占用与基线不符且仍零副作用（D4）；纯 no-op 重复 setup 不再 +1 revision（D5）
+  - **夹具纪律**：凡「与 HEAD 状态相关」的用例，夹具必须让 HEAD 与声明基线停在不同提交。早期 `workspace-setup` 夹具让三者同 commit，`git branch -d` 与 `merge-base --is-ancestor <branch> <base>` 结论完全一致，使 D2 在 383 条全绿下漏网——**全绿不等于夹具有能力区分**
   - `unit`：分支命名规则（`{base_branch}-{slug}` 与 slug 兜底 `n{id}`）、建分支 / worktree 幂等、清理默认保留、开发提示词内容
   - `test-case`：测试用例 CRUD / 按名唯一与 upsert 幂等 / `kind` 筛选 / 启停 / 排序 / 级联删除；报告开启与终态回写 / 历史保留；验收报告聚合（最近结果 / 通过率 / 未执行口径 / `scope=subtree` / 空态）；编排层 `dryRun` 与提示词拼装
   - `cli-regression-loop`：真实 CLI 子进程跑参数契约（`--enabled` / `--run-id` / `--overwrite`）与错误码

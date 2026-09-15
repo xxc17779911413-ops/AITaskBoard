@@ -5,6 +5,7 @@ import { openDb } from './db.mjs'
 import { createStore } from './store.mjs'
 import { loadConfig, saveConfig, maskToken } from './config.mjs'
 import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline } from './ops.mjs'
+import { setupWorkspace, getWorkspacePrompt, cleanupWorkspace } from './ops.mjs'
 import { startAgentRun, retryAndDispatch } from './agent.mjs'
 import { resolveRepoDir, pickBranchForCommit } from './git.mjs'
 import { saveUpload } from './uploads.mjs'
@@ -604,6 +605,88 @@ export function createMcpServer({ store }) {
   server.tool('repo_remove', '删除仓库', { id: z.number() }, async ({ id }) => {
     return { content: [{ type: 'text', text: JSON.stringify(store.deleteRepo(id), null, 2) }] }
   })
+
+  // ---------- 工作区准备（分支 / worktree / 开发提示词） ----------
+
+  server.tool(
+    'unit_repo_list',
+    '列出工作单元（group / task）登记的涉及仓库（branch / worktree_path）',
+    { node: z.union([z.number(), z.string()]) },
+    mcpValidate(async ({ node }) => {
+      const n = store.resolveRef(String(node))
+      return { content: [{ type: 'text', text: JSON.stringify(store.listUnitRepos(n.id), null, 2) }] }
+    })
+  )
+
+  server.tool(
+    'unit_repo_add',
+    '登记工作单元涉及仓库（按 node × repo 幂等；已存在时只更新显式传入的字段）',
+    {
+      node: z.union([z.number(), z.string()]),
+      repoId: z.union([z.number(), z.string()]),
+      branch: z.string().optional(),
+      worktreePath: z.string().optional()
+    },
+    mcpValidate(async ({ node, repoId, branch, worktreePath }) => {
+      const n = store.resolveRef(String(node))
+      const out = store.addUnitRepo(n.id, { repoId, branch, worktreePath }, 'ai')
+      return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] }
+    })
+  )
+
+  server.tool(
+    'unit_repo_remove',
+    '移除工作单元仓库关联',
+    { id: z.union([z.number(), z.string()]) },
+    mcpValidate(async ({ id }) => {
+      return { content: [{ type: 'text', text: JSON.stringify(store.deleteUnitRepo(Number(id)), null, 2) }] }
+    })
+  )
+
+  server.tool(
+    'unit_setup',
+    '创建工作区：按 branchTemplate 逐仓库建分支 + worktree（分支从子需求分支派生），回填并返回开发提示词。dryRun 只做规划、不碰 git 不落库',
+    {
+      node: z.union([z.number(), z.string()]),
+      repoIds: z.array(z.union([z.number(), z.string()])).optional(),
+      branch: z.string().optional(),
+      baseBranch: z.string().optional(),
+      dryRun: z.boolean().optional()
+    },
+    mcpValidate(async ({ node, repoIds, branch, baseBranch, dryRun }) => {
+      const n = store.resolveRef(String(node))
+      const out = await setupWorkspace(store, n.id, { repoIds, branch, baseBranch, dryRun: !!dryRun, by: 'ai' })
+      return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] }
+    })
+  )
+
+  server.tool(
+    'unit_prompt',
+    '生成 / 刷新开发提示词（纯读，不碰 git 不落库）：节点上下文 + 工作区路径 + 分支基线 + 文档清单 + 命令与约定',
+    { node: z.union([z.number(), z.string()]) },
+    mcpValidate(async ({ node }) => {
+      const n = store.resolveRef(String(node))
+      return { content: [{ type: 'text', text: JSON.stringify(getWorkspacePrompt(store, n.id), null, 2) }] }
+    })
+  )
+
+  server.tool(
+    'unit_cleanup',
+    '清理工作区（移除 worktree / 删除已并入基线分支）；破坏性操作，必须 confirm: true',
+    {
+      node: z.union([z.number(), z.string()]),
+      // `.catch(undefined)`：对外 schema 仍是 required boolean（AI 看到的契约不变），
+      // 但「没传 confirm」不再被 SDK 拦成 -32602，而是下沉到 handler 由 mcpValidate
+      // 归一成 isError + CONFIRM_REQUIRED——与 HTTP / CLI 的拒绝语义一致（同 D6 纪律）。
+      confirm: z.boolean().catch(undefined),
+      removeBranch: z.boolean().optional()
+    },
+    mcpValidate(async ({ node, confirm, removeBranch }) => {
+      const n = store.resolveRef(String(node))
+      const out = await cleanupWorkspace(store, n.id, { confirm: !!confirm, removeBranch: removeBranch !== false, by: 'ai' })
+      return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] }
+    })
+  )
 
   // ---------- 导入 / 批量 ----------
 

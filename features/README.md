@@ -44,6 +44,7 @@
 | **验收签收**（测试证据 + 业务结论 + 证据指纹失效） | `acceptance-signoff/` | — | server/{db,store,ops}.mjs（acceptance_signoffs）+ 三入口 acceptance_status/sign |
 | **需求管理**（需求条目 / 受控状态流转 / 核心文档关联 + Web 需求管理页） | `requirement-management/` | — | server/{store,http,cli,mcp}.mjs（requirement_*）+ web/src/views/RequirementsView.vue |
 | **图片上传**（文档粘贴 / 选择图片 → base64 JSON → `/uploads/<name>`，魔数与声明类型交叉校验） | `uploads/` | 计划 5 | server/uploads.mjs + server/{http,cli,mcp}.mjs（upload_image）+ DocPane Vditor upload.handler |
+| **工作区准备**（工作单元登记仓库 → 建分支 + worktree → 返回开发提示词；清理需 confirm，未并分支保留） | `workspace-setup/` | 计划 4 | server/{git,store,ops,http,cli,mcp}.mjs（unit_repos / setupWorkspace / unit_*）|
 
 ### 已实现但**不设独立目录**（语义并入上述目录，避免索引重复）
 
@@ -63,7 +64,6 @@
 |---|---|---|---|
 | 代码集成（显式合并） | `merge-integration/` | 计划 4 | server/git.mjs、merges 表 |
 | 冲突检测与处理 | `conflict-resolution/` | 计划 4 | server/git.mjs、web ConflictPane |
-| 工作区准备（分支 / worktree / 开发提示词） | `workspace-setup/` | 计划 4 | server/git.mjs、unit_repos 表 |
 | MR 自动拉取 | `mr-sync/` | 计划 5 | server/gitlab.mjs、mrs 表 |
 | 冒烟脚本 | `smoke-and-ai-docs/` | 计划 5 | scripts/smoke.mjs |
 
