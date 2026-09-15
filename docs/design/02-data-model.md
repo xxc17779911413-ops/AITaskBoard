@@ -209,6 +209,7 @@ v1 中所有属性值均由用户编辑；系统自动写入的数据只有 MR �
   "gitlab": { "base_url": "", "token": "" },
   "docPresets": { "project": ["描述"], "requirement": ["需求内容"], "subreq": ["需求内容"], "group": [], "task": [], "defect": ["描述", "复现步骤"] },
   "readiness": { "requirementDoc": "需求内容", "designDoc": "概要设计", "caseKinds": ["regression", "acceptance"] },
+  "releaseSqlAudit": { "rules": [ { "key": "drop_table", "severity": "danger" } ], "requireRollback": true },
   "worktreeRoot": "",
   "branchTemplate": "{base_branch}-{slug}",
   "status": {
@@ -222,6 +223,10 @@ v1 中所有属性值均由用户编辑；系统自动写入的数据只有 MR �
 
 `readiness` 是**需求就绪门禁**的口径（见 §4.16）：文档名与「视为可回归」的用例类型都是值域，
 团队改用「详细设计」等命名时只改配置、不改代码。
+
+`releaseSqlAudit` 是**上线 SQL 风险审查**的规则集（见 §4.17）：每条规则含 `key` / `severity`（`danger` 阻塞、
+`warn` 仅提示）/ `pattern`（正则，大小写不敏感），`requireRollback` 控制「缺回滚脚本是否记提示」。
+团队可按需增删规则，不改代码。
 
 ### 4.11 merges（合并尝试与冲突）
 
@@ -517,3 +522,31 @@ index：`idx_test_reports_node(node_id, id)`、`idx_test_reports_case(case_id, i
 读取时按同一 `node_id + scope` 重新构建当前门禁并比较指纹，返回 `drift.status=current|drifted`；
 `drifted` 表示历史证据仍原样保留，但当前源数据已变化。快照写入是显式动作，每次只递增一次 revision；
 读取快照只做核对，不写库、不 bump revision。
+### 4.17 上线 SQL 风险审查（上线检查的静态前置判定，不落表）
+
+上线治理的 `release_items`（§4.15）能回答「上线项做完了没有」，但不回答 `kind=sql` 的**内容本身**
+有没有风险。本节补这层静态判定：把节点（含子树）下的 SQL 上线项正文扫一遍，给出「有没有高危写法」的结论。
+
+审查**不建表**：它从既有 `release_items.content` 推导结论，落库会造成两处真相。
+由 `buildReleaseSqlAudit(nodeId, { scope })` 纯读聚合，**不写库、不动 revision**。
+
+**规则命中分两级严重度**（规则集来自 `config.releaseSqlAudit.rules`）：
+
+| 严重度 | 规则（默认） | 对结论的影响 |
+|---|---|---|
+| `danger` | `drop_table`（DROP TABLE/DATABASE）、`truncate`、`delete_without_where`、`update_without_where` | 阻塞：任一命中 → `ready=false`，进 `blockers` |
+| `warn` | `drop_column`、`sql_no_rollback`（缺回滚脚本） | 仅提示：进 `warnings`，不改变 `ready` |
+
+注释剥离、`;` 分段与 `WHERE` 判定共享**一次词法扫描**（`scanSql`），只在字符串 / 注释之外识别这些边界，
+统一处理单引号 / 双引号 / 反引号、转义符与注释状态：字符串字面量里的 `where` / `--` / 块注释符号 / `;`
+都不得影响判定（否则会分别造成「洗白无条件 `UPDATE`」「吞掉后续 `DROP TABLE`」「错误切段误报」三类假结论）。
+规则正则与 `WHERE` 判定只看代码区掩码，大小写不敏感。
+
+`config.releaseSqlAudit.rules` 缺省用默认规则集；非数组或**空数组显式拒绝**（`VALIDATION_FAILED`），
+不静默回退默认。只有 `undefined`（字段不写）算「未配置」，**显式 `null` 按非数组拒绝**。
+
+已知风险（首版不修）：PostgreSQL 的嵌套块注释（`/* outer /* inner */ ... */`）按单层处理，
+内层语句可能被误判为真实语句；PRD §3 已声明不做方言适配。
+
+结论口径：范围内**无 `kind=sql` 上线项 → `ready=null`**（不用 `false` 冒充未通过，也不当绿灯）；
+有 SQL 项且无 `danger` → `true`；任一 `danger` → `false`。

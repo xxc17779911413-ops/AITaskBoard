@@ -27,6 +27,18 @@ export const DEFAULT_CONFIG = {
     designDoc: '概要设计',
     caseKinds: ['regression', 'acceptance']
   },
+  // 上线 SQL 风险审查：危险级别阻塞、提示级不阻塞（规则集可由 config.json 覆盖）。
+  releaseSqlAudit: {
+    rules: [
+      { key: 'drop_table', severity: 'danger', pattern: '\\bdrop\\s+(table|database)\\b', label: 'DROP TABLE / DROP DATABASE（不可逆）' },
+      { key: 'truncate', severity: 'danger', pattern: '\\btruncate\\b', label: 'TRUNCATE（清空表数据）' },
+      { key: 'delete_without_where', severity: 'danger', pattern: '\\bdelete\\s+from\\b', requireNoWhere: true, label: 'DELETE 缺少 WHERE 限定' },
+      { key: 'update_without_where', severity: 'danger', pattern: '\\bupdate\\b', requireNoWhere: true, label: 'UPDATE 缺少 WHERE 限定' },
+      { key: 'drop_column', severity: 'warn', pattern: '\\bdrop\\s+column\\b', label: 'DROP COLUMN（结构不可逆）' }
+    ],
+    // 缺回滚脚本记一条提示（不阻塞），由 buildReleaseSqlAudit 单独处理。
+    requireRollback: true
+  },
   worktreeRoot: '',
   branchTemplate: '{base_branch}-{slug}',
   // 提示词模板（各环节派单；变量 {{...}} 由插件/调用方注入）

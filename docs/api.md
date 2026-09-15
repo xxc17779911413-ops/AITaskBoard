@@ -583,6 +583,11 @@ curl -s 'http://127.0.0.1:3210/api/nodes/1/release-checklist?format=md'
 # 就绪口径：必做项全部 done/skipped，且所有启用中的 code_check / biz_check / release_check
 # 用例最近结论为 pass；running / not_run 都不算证据。既无必做项也无检查用例时 ready=null。
 # 响应里 blockers=必做上线项，caseBlockers=检查用例（带 latestStatus / latestReportId）。
+# 上线 SQL 风险审查：静态扫描 kind=sql 上线项正文
+# DROP TABLE/DATABASE、TRUNCATE、无 WHERE 的 UPDATE/DELETE 阻塞；DROP COLUMN / 缺回滚只提示
+curl -s http://127.0.0.1:3210/api/nodes/1/release-sql-audit
+curl -s 'http://127.0.0.1:3210/api/nodes/1/release-sql-audit?scope=subtree'
+curl -s 'http://127.0.0.1:3210/api/nodes/1/release-sql-audit?format=md'
 
 # 上线前置检查：挑 code_check / biz_check / release_check 用例派单；dryRun 只回提示词
 curl -s -X POST http://127.0.0.1:3210/api/nodes/1/release-checks \
@@ -618,7 +623,7 @@ curl -s 'http://127.0.0.1:3210/api/nodes/1/readiness?format=md'
 
 > `scope` 只接受 `self` / `subtree`（缺省 = `self`）；其它取值（含 `Subtree` / 空串）返回
 > `400 VALIDATION_FAILED`，**不会静默降级成 `self`**。同一规则适用于 `acceptance-report` /
-> `release-checklist` / `delivery-gate` / `diffs` / `tracks` / `duplicates`。
+> `release-checklist` / `release-sql-audit` / `delivery-gate` / `diffs` / `tracks` / `duplicates`。
 > 空态：子树内没有需求时返回 `ready=null`（`totals.units=0`），不是 400。
 
 ## 概要设计大纲 / 思维导图（需求管理 → 概要设计 → 文档）

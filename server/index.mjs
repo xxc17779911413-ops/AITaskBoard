@@ -23,7 +23,12 @@ function listen(app, port) {
 export async function startServer({ port, open = true, host = '127.0.0.1' } = {}) {
   const cfg = loadConfig()
   const db = openDb()
-  const store = createStore(db, { docPresets: cfg.docPresets, readiness: cfg.readiness, status: cfg.status })
+  const store = createStore(db, {
+    docPresets: cfg.docPresets,
+    readiness: cfg.readiness,
+    status: cfg.status,
+    releaseSqlAudit: cfg.releaseSqlAudit
+  })
   store.failStaleAgentRuns()
   // 本机服务自身就是一个 daemon：启动时把本机默认 CLI 运行时注册为在线
   try {

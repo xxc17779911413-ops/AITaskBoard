@@ -71,6 +71,7 @@ export const TOOLS = [
   'release_item_reorder',
   'release_check',
   'release_checklist',
+  'release_sql_audit',
   'runtime_list',
   'runtime_register',
   'runtime_heartbeat',
@@ -111,6 +112,7 @@ export function buildSchema(store, config) {
     status: config.status,
     docPresets: config.docPresets,
     readiness: config.readiness,
+    releaseSqlAudit: config.releaseSqlAudit,
     branchTemplate: config.branchTemplate,
     attrDefs: store.listAttrDefs(undefined, { includeDisabled: true }),
     tools: TOOLS
@@ -1833,6 +1835,43 @@ export function renderReleaseChecklistMd(checklist) {
         `| ${c.name} | ${caseKindLabels[c.kind] || c.kind} | ${caseStatusLabels[c.latestStatus] || c.latestStatus} | ${c.latestReportId ?? '—'} |`
       )
     }
+  }
+  return lines.join('\n')
+}
+
+/**
+ * 上线 SQL 风险审查导出：把静态规则扫描结果渲染成可贴进上线单 / 评审记录的 markdown。
+ * 与 renderReleaseChecklistMd / renderDeliveryGateMd 同风格。
+ */
+export function renderReleaseSqlAuditMd(audit) {
+  // SQL 正文可能含 `|` 与换行，进入表格前必须转义（与 renderDeliveryGateMd.cell() 同款处理）。
+  const cell = (v) =>
+    String(v == null ? '' : v)
+      .replace(/\\/g, '\\\\')
+      .replace(/\|/g, '\\|')
+      .replace(/\r?\n/g, ' ')
+  const t = audit.totals
+  const lines = [
+    `# 上线 SQL 风险审查：${audit.node.name}`,
+    '',
+    `- 范围：${audit.scope === 'subtree' ? '含子树' : '仅本节点'}`,
+    `- SQL 上线项：${t.sqlItems} · 高危项：${t.danger}（命中 ${t.risky} 条规则） · 提示项：${t.warned}（命中 ${t.warnings} 条规则）`,
+    `- 审查结论：${audit.ready == null ? '—（没有可审查的 SQL）' : audit.ready ? '未发现高危写法（可继续）' : '发现高危写法（需处理）'}`,
+    ''
+  ]
+  if (audit.blockers.length > 0) {
+    lines.push('## 高危项', '', '| 上线项 | 规则 | 语句 |', '|---|---|---|')
+    for (const b of audit.blockers) lines.push(`| ${cell(b.name)} | ${cell(b.label)} | ${cell(b.statement || '—')} |`)
+    lines.push('')
+  }
+  if (audit.warnings.length > 0) {
+    lines.push('## 提示项', '', '| 上线项 | 规则 | 语句 |', '|---|---|---|')
+    for (const w of audit.warnings) lines.push(`| ${cell(w.name)} | ${cell(w.label)} | ${cell(w.statement || '—')} |`)
+    lines.push('')
+  }
+  lines.push('## SQL 上线项明细', '', '| 上线项 | 状态 | 高危 | 提示 |', '|---|---|---|---|')
+  for (const i of audit.items) {
+    lines.push(`| ${cell(i.name)} | ${cell(i.status)} | ${i.dangerCount} | ${i.warnCount} |`)
   }
   return lines.join('\n')
 }

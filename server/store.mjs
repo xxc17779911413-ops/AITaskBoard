@@ -98,6 +98,21 @@ const DOCUMENT_FILL_VALUES = ['filled', 'empty']
 export const RELEASE_CHECK_CASE_KINDS = new Set(['code_check', 'biz_check', 'release_check'])
 
 /**
+ * 上线 SQL 风险审查规则（与 config.releaseSqlAudit 默认值一致）。
+ * `danger` 阻塞上线；`warn` 只提示。`requireNoWhere` 表示「语句内出现该模式且整条语句无 WHERE」才命中。
+ */
+const DEFAULT_RELEASE_SQL_AUDIT = {
+  rules: [
+    { key: 'drop_table', severity: 'danger', pattern: '\\bdrop\\s+(table|database)\\b', label: 'DROP TABLE / DROP DATABASE（不可逆）' },
+    { key: 'truncate', severity: 'danger', pattern: '\\btruncate\\b', label: 'TRUNCATE（清空表数据）' },
+    { key: 'delete_without_where', severity: 'danger', pattern: '\\bdelete\\s+from\\b', requireNoWhere: true, label: 'DELETE 缺少 WHERE 限定' },
+    { key: 'update_without_where', severity: 'danger', pattern: '\\bupdate\\b', requireNoWhere: true, label: 'UPDATE 缺少 WHERE 限定' },
+    { key: 'drop_column', severity: 'warn', pattern: '\\bdrop\\s+column\\b', label: 'DROP COLUMN（结构不可逆）' }
+  ],
+  requireRollback: true
+}
+
+/**
  * 解析 agent 输出里的逐条测试结论。
  * 契约来自 ops.composeTestPrompt / composeReleaseCheckPrompt：
  *   `<用例名>: PASS|FAIL|BLOCKED - <依据>`
@@ -188,6 +203,7 @@ export function createStore(db, options = {}) {
       transitions: requirementTransitions
     })
   }
+  const releaseSqlAudit = options.releaseSqlAudit || DEFAULT_RELEASE_SQL_AUDIT
   const stmt = (sql) => db.prepare(sql)
 
   let bumpDepth = 0
@@ -2597,6 +2613,225 @@ export function createStore(db, options = {}) {
     }
   }
 
+  // ---------- 上线 SQL 风险审查（上线检查的静态前置判定） ----------
+  //
+  // 上线治理能回答「上线项做完了没有」，但不回答 kind=sql 的内容本身有没有风险。
+  // 这里把节点（含子树）下的 SQL 上线项正文做**静态规则扫描**，给出「有没有高危写法」的结论。
+  // 与 acceptance_report / readiness / release_checklist 同一条「只读聚合」原则：
+  // 纯读、不落表、不 bump revision——结论从已登记内容实时推导，避免第二份真相。
+
+  /**
+   * 单次词法扫描：把 SQL 切成语句，并同时产出「只剩代码区」的掩码文本。
+   *
+   * 为什么不能分别做三处全文正则（独立测试 D1/D2/D3 的根因）：注释剥离、`;` 分段、
+   * `WHERE` 判定必须共享同一份词法状态，否则字符串字面量会互相污染——
+   *   - `UPDATE t SET note = 'where';`  字面量里的 where 会替无条件 UPDATE 洗白；
+   *   - `SELECT '--'; DROP TABLE t;`    字面量里的 `--` 会当行注释吞掉后续危险语句；
+   *   - `UPDATE t SET note = ';' WHERE id = 1;` 字面量里的 `;` 会错误切断语句。
+   *
+   * 处理范围：单引号字符串、双引号 / 反引号标识符、双减号行注释、斜杠星号块注释，
+   * 以及字符串内的反斜杠转义与成对引号转义（两个单引号 / 两个双引号 / 两个反引号）。
+   * 字符串与注释区间在掩码里替换为空格（保留字符长度便于定位），因此后续的规则正则与
+   * `WHERE` 判定只在**代码区**进行；注释本身视作空白，被注释隔开的关键字仍能被正确识别。
+   */
+  function scanSql(sql) {
+    const text = String(sql ?? '')
+    const masked = new Array(text.length).fill(' ')
+    const spans = []
+    let start = 0
+    let i = 0
+    while (i < text.length) {
+      const ch = text[i]
+      if (ch === '-' && text[i + 1] === '-') {
+        // 行注释：吞到行尾（换行本身留作空白）
+        i += 2
+        while (i < text.length && text[i] !== '\n' && text[i] !== '\r') i += 1
+        continue
+      }
+      if (ch === '/' && text[i + 1] === '*') {
+        // 块注释：吞到配对的 */（未闭合则吞到结尾）
+        i += 2
+        while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i += 1
+        i = Math.min(i + 2, text.length)
+        continue
+      }
+      if (ch === "'" || ch === '"' || ch === '`') {
+        const quote = ch
+        i += 1
+        while (i < text.length) {
+          if (text[i] === '\\') {
+            i += 2
+            continue
+          }
+          if (text[i] === quote) {
+            if (text[i + 1] === quote) {
+              i += 2
+              continue
+            }
+            i += 1
+            break
+          }
+          i += 1
+        }
+        continue
+      }
+      if (ch === ';') {
+        spans.push({ start, end: i })
+        i += 1
+        start = i
+        continue
+      }
+      masked[i] = ch
+      i += 1
+    }
+    spans.push({ start, end: text.length })
+    return spans
+      .map(({ start: s, end: e }) => ({ raw: text.slice(s, e).trim(), code: masked.slice(s, e).join('') }))
+      .filter((s) => s.raw.length > 0)
+  }
+
+  /**
+   * 单条语句命中哪些规则。规则与 `WHERE` 判定只针对**代码区**（字符串 / 注释已掩成空格），
+   * 因此不会被字面量里的文本左右（见 design R3）；`raw` 只用于回显给调用方。
+   */
+  function auditSqlStatement({ raw, code }, rules) {
+    const lower = code.toLowerCase()
+    const hasWhere = /\bwhere\b/.test(lower)
+    const hits = []
+    for (const rule of rules) {
+      let re
+      try {
+        re = new RegExp(rule.pattern, 'i')
+      } catch {
+        continue
+      }
+      if (!re.test(lower)) continue
+      if (rule.requireNoWhere && hasWhere) continue
+      hits.push({
+        key: rule.key,
+        severity: rule.severity === 'warn' ? 'warn' : 'danger',
+        label: rule.label || rule.key,
+        statement: raw
+      })
+    }
+    return hits
+  }
+
+  /**
+   * 规则集契约：`releaseSqlAudit.rules` 缺省 / 未配置 → 用默认规则；
+   * 其余输入（**含 `null`**）一律按「非数组」显式拒绝，而不是静默回退默认——
+   * `undefined`（字段缺省）才是「未配置」；`null` 是显式写了空值，属于配置写错。
+   * 空数组同样拒绝：否则「想放宽规则」和「配置写错」都表现为悄悄使用默认集，
+   * 或（若改成默认放行）把审查变成橡皮图章。要放宽请保留至少一条规则。
+   */
+  function resolveSqlAuditRules() {
+    const configured = releaseSqlAudit ? releaseSqlAudit.rules : undefined
+    if (configured === undefined) return DEFAULT_RELEASE_SQL_AUDIT.rules
+    if (configured === null) {
+      throw new AppError(
+        CODES.VALIDATION_FAILED,
+        'releaseSqlAudit.rules 不能为 null——缺省（字段不写）才用默认规则集；显式 null 属于非法配置',
+        { rules: null }
+      )
+    }
+    if (!Array.isArray(configured)) {
+      throw new AppError(CODES.VALIDATION_FAILED, 'releaseSqlAudit.rules 必须是数组', { rules: configured })
+    }
+    if (configured.length === 0) {
+      throw new AppError(
+        CODES.VALIDATION_FAILED,
+        'releaseSqlAudit.rules 不能为空数组——空规则集会静默放行所有 SQL；如需放宽请保留至少一条规则',
+        { rules: configured }
+      )
+    }
+    return configured
+  }
+
+  /**
+   * 上线 SQL 风险审查：按节点（self / subtree）扫 kind=sql 上线项，给出「能否继续」的确定结论。
+   * 纯读聚合。danger 命中 → ready=false；仅 warn → ready=true；范围内无 SQL 项 → ready=null。
+   */
+  function buildReleaseSqlAudit(nodeId, { scope = 'self' } = {}) {
+    const root = rawNode(nodeId)
+    const effectiveScope = normalizeScope(scope)
+    const ids = effectiveScope === 'subtree' ? subtreeIds(nodeId) : [nodeId]
+    const rules = resolveSqlAuditRules()
+    const requireRollback = releaseSqlAudit.requireRollback !== false
+
+    const sqlItems = ids.flatMap((id) => listReleaseItems(id, { kind: 'sql' }))
+
+    const items = sqlItems.map((item) => {
+      const hits = []
+      for (const statement of scanSql(item.content)) {
+        hits.push(...auditSqlStatement(statement, rules))
+      }
+      if (requireRollback && !String(item.rollback ?? '').trim()) {
+        hits.push({ key: 'sql_no_rollback', severity: 'warn', label: '缺少回滚脚本', statement: '' })
+      }
+      const dangerHits = hits.filter((h) => h.severity === 'danger')
+      const warnHits = hits.filter((h) => h.severity === 'warn')
+      return {
+        id: item.id,
+        nodeId: item.nodeId,
+        name: item.name,
+        status: item.status,
+        required: item.required,
+        content: item.content,
+        rollback: item.rollback,
+        ok: dangerHits.length === 0,
+        dangerCount: dangerHits.length,
+        warnCount: warnHits.length,
+        hits
+      }
+    })
+
+    const dangerItems = items.filter((i) => i.dangerCount > 0)
+    const warnItems = items.filter((i) => i.warnCount > 0)
+    const riskCount = items.reduce((n, i) => n + i.dangerCount, 0)
+    const warningCount = items.reduce((n, i) => n + i.warnCount, 0)
+
+    const blockers = dangerItems.flatMap((i) =>
+      i.hits
+        .filter((h) => h.severity === 'danger')
+        .map((h) => ({
+          id: i.id,
+          nodeId: i.nodeId,
+          name: i.name,
+          key: h.key,
+          label: h.label,
+          statement: h.statement
+        }))
+    )
+    const warnings = warnItems.flatMap((i) =>
+      i.hits
+        .filter((h) => h.severity === 'warn')
+        .map((h) => ({
+          id: i.id,
+          nodeId: i.nodeId,
+          name: i.name,
+          key: h.key,
+          label: h.label,
+          statement: h.statement
+        }))
+    )
+
+    return {
+      node: { id: root.id, name: root.name, type: root.type },
+      scope: effectiveScope,
+      ready: items.length === 0 ? null : dangerItems.length === 0,
+      totals: {
+        sqlItems: items.length,
+        danger: dangerItems.length,
+        risky: riskCount,
+        warned: warnItems.length,
+        warnings: warningCount
+      },
+      items,
+      blockers,
+      warnings
+    }
+  }
+
   // ---------- 交付门禁（汇总需求就绪 / 验收 / 上线三段结论） ----------
   //
   // 前三个功能各自回答一段问题：需求就绪门禁=能不能进测试，验收报告=测试过没过，
@@ -3871,6 +4106,8 @@ export function createStore(db, options = {}) {
     reorderReleaseItems,
     RELEASE_CHECK_CASE_KINDS,
     buildReleaseChecklist,
+    // 上线 SQL 风险审查（上线检查的静态前置判定）
+    buildReleaseSqlAudit,
     // 交付门禁（汇总需求就绪 / 验收 / 上线结论）
     buildDeliveryGate,
     captureDeliverySnapshot,

@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util'
 import { openDb } from './db.mjs'
 import { createStore } from './store.mjs'
 import { loadConfig, saveConfig, maskToken, DB_PATH } from './config.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline, renderTestReportMd, setupWorkspace, getWorkspacePrompt, cleanupWorkspace, parseMaxParallelCli, renderSecretScanMd, renderDeliverySnapshotMd } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline, renderTestReportMd, setupWorkspace, getWorkspacePrompt, cleanupWorkspace, parseMaxParallelCli, renderSecretScanMd, renderDeliverySnapshotMd, renderReleaseSqlAuditMd } from './ops.mjs'
 import { startAgentRun, retryAndDispatch, waitForAgentRun } from './agent.mjs'
 import { saveUpload } from './uploads.mjs'
 
@@ -174,6 +174,7 @@ const HELP = `task-board <命令>
   release item remove <rid>
   release item reorder <ref> --ids "1,2,3"
   release checklist <ref> [--scope self|subtree] [--format json|md]   上线检查清单（完成度 + 阻塞项 + 就绪结论）
+  release sql-audit <ref> [--scope self|subtree] [--format json|md]   上线 SQL 风险审查（静态扫描高危写法）
   release check <ref> [--case-ids "1,2"] [--scope self|subtree] [--prompt "额外要求"] [--dry-run] [--no-wait] [--wait-timeout 秒]
                                     派单执行上线前置检查（含 code/biz/release_check 用例）；默认等终态并自动收尾
   runtime list [--status online|offline]        运行时列表（含本机 CLI 实例状态）
@@ -295,7 +296,7 @@ export async function run(argv) {
 
   const cfg = loadConfig()
   const db = openDb()
-  const store = createStore(db, { docPresets: cfg.docPresets, readiness: cfg.readiness, status: cfg.status })
+  const store = createStore(db, { docPresets: cfg.docPresets, readiness: cfg.readiness, status: cfg.status, releaseSqlAudit: cfg.releaseSqlAudit })
   const by = values.actor || 'cli'
   let [group, action, ref] = positionals
   // `mindmap <ref>` 是单层命令（帮助如此，PM 口径亦如此），与 `readiness check <ref>` /
@@ -726,6 +727,13 @@ export async function run(argv) {
       const checklist = store.buildReleaseChecklist(node.id, { scope: values.scope })
       if (store.normalizeFormat(values.format) === 'md') process.stdout.write(renderReleaseChecklistMd(checklist) + '\n')
       else json(checklist)
+      break
+    }
+    case 'release sql-audit': {
+      const node = store.resolveRef(ref)
+      const audit = store.buildReleaseSqlAudit(node.id, { scope: values.scope })
+      if (store.normalizeFormat(values.format) === 'md') process.stdout.write(renderReleaseSqlAuditMd(audit) + '\n')
+      else json(audit)
       break
     }
     case 'release check': {

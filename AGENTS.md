@@ -115,7 +115,7 @@ docs/design.md    ← 主设计文档权威副本
       test_run · test_report_list · test_report_get · test_report_finish · acceptance_report
       acceptance_status · acceptance_sign
 上线  release_item_list · release_item_upsert · release_item_update · release_item_remove · release_item_reorder
-      release_checklist · release_check
+      release_checklist · release_check · release_sql_audit
 agent 运行时  runtime_list · runtime_register · runtime_heartbeat · runtime_status · runtime_remove
 agent 会话    agent_session_list · agent_session_new · agent_session_archive
 agent 任务    agent_run · agent_runs_list · agent_run_get · agent_run_messages
@@ -173,6 +173,7 @@ release item upsert "项目A/需求1" --name "执行上线 SQL" --kind sql --con
 release item list "项目A/需求1" [--kind config|sql|check] [--status pending|ready|done|blocked|skipped]
 release item update <rid> --status done              # 必做项 done/skipped 才算完成
 release checklist "项目A/需求1" [--scope subtree] [--format md]   # 上线检查清单（就绪结论 + 阻塞项）
+release sql-audit "项目A/需求1" [--scope subtree] [--format md]   # 上线 SQL 风险审查（静态扫描高危写法）
 release check "项目A/需求1" [--scope subtree] [--dry-run] [--no-wait]   # 派单上线前置检查（code/biz/release_check 用例）
 ```
 
