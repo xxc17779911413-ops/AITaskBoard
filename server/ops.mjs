@@ -59,6 +59,7 @@ export const TOOLS = [
   'design_outline',
   'design_outline_apply',
   'mindmap',
+  'secret_scan',
   'delivery_gate',
   'release_item_list',
   'release_item_upsert',
@@ -1183,6 +1184,40 @@ export function renderMindmapMd(mindmap) {
     '```',
     ''
   ]
+  return lines.join('\n')
+}
+
+/**
+ * 文档敏感信息扫描导出：把只读扫描结果渲染成可贴进 issue / 评审记录的 markdown。
+ *
+ * 与其它 render*Md 一样只打印已脱敏的 `redacted` / `excerpt`，绝不回显命中的原文；
+ * 否则安全扫描本身就会成为第二条凭据泄露通道。
+ */
+export function renderSecretScanMd(scan) {
+  const cell = (v) =>
+    String(v == null ? '' : v)
+      .replace(/\\/g, '\\\\')
+      .replace(/\|/g, '\\|')
+      .replace(/\r?\n/g, ' ')
+  const t = scan.totals
+  const lines = [
+    `# 文档敏感信息扫描：${scan.node.name}`,
+    '',
+    `- 范围：${scan.scope === 'subtree' ? '含子树' : '仅本节点'}`,
+    `- 文档：${t.documents} · 字符：${t.scannedCharacters} · 命中：${t.findings}（高危 ${t.danger} / 提示 ${t.warnings}）`,
+    `- 扫描结论：${scan.ready == null ? '—（范围内没有文档可扫描）' : scan.ready ? '未发现高危凭据' : '发现高危凭据，需先清理'}`,
+    '',
+    '## 命中项',
+    '',
+    '| 节点 | 文档 | 规则 | 严重度 | 位置 | 脱敏值 | 上下文 | 处置建议 |',
+    '|---|---|---|---|---|---|---|---|'
+  ]
+  for (const f of scan.findings) {
+    lines.push(
+      `| ${cell(f.nodeName)} | ${cell(f.docName)} | ${cell(f.label)} | ${f.severity === 'danger' ? '高危' : '提示'} | L${f.line}:C${f.column} | ${cell(f.redacted)} | ${cell(f.excerpt)} | ${cell(f.advice)} |`
+    )
+  }
+  if (scan.findings.length === 0) lines.push('| — | — | — | — | — | — | 未命中 | — |')
   return lines.join('\n')
 }
 

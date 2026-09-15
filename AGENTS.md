@@ -108,6 +108,7 @@ docs/design.md    ← 主设计文档权威副本
 批量  batch · import_outline
 门禁  requirement_readiness · mindmap · delivery_gate
 设计  design_outline · design_outline_apply
+门禁  requirement_readiness · secret_scan · delivery_gate
 回归  test_case_list · test_case_upsert · test_case_update · test_case_remove · test_case_reorder
       test_run · test_report_list · test_report_get · test_report_finish · acceptance_report
       acceptance_status · acceptance_sign
@@ -160,6 +161,7 @@ readiness check "项目A/需求1" [--scope subtree] [--format md]  # 需求就�
 mindmap "项目A/需求1" [--scope subtree] [--max-depth N] [--format md]  # 思维导图（mermaid mindmap 只读投影）
 design outline "项目A/需求1" [--scope subtree] [--format md]   # 概要设计大纲 / 思维导图（从需求树推导骨架）
 design apply "项目A/需求1" [--scope subtree] [--overwrite]     # 写入「概要设计」文档（默认不覆盖已填写内容）
+secret scan "项目A/需求1" [--scope subtree] [--format md]      # 文档敏感信息扫描（只读，命中值脱敏）
 delivery gate "项目A/需求1" [--scope subtree] [--format md]    # 交付门禁（需求就绪 + 测试验收 + 上线治理的最终汇总）
 
 release item upsert "项目A/需求1" --name "执行上线 SQL" --kind sql --content "ALTER TABLE …" --rollback "DROP …"

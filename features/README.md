@@ -47,6 +47,7 @@
 | **工作区准备**（工作单元登记仓库 → 建分支 + worktree → 返回开发提示词；清理需 confirm，未并分支保留） | `workspace-setup/` | 计划 4 | server/{git,store,ops,http,cli,mcp}.mjs（unit_repos / setupWorkspace / unit_*）|
 | **交付门禁**（需求就绪 / 测试验收 / 上线治理的最终汇总，纯读聚合不落表） | `delivery-gate/` | — | server/{store,ops}.mjs（buildDeliveryGate）+ 三入口 delivery_gate + NodeDrawer「交付」页签 |
 | **并行派单**（回归用例 fan-out：每条用例一个独立 agent 任务，`maxParallel` 护栏） | `test-fanout/` | — | server/ops.mjs（runTestCases 的 fanout 分支）+ 三入口 test_run 的 `fanout`/`maxParallel` |
+| **文档敏感信息扫描**（节点/子树文档只读凭据扫描；高危阻塞、证据强制脱敏、空态 ready=null） | `secret-scan/` | — | server/store.mjs（buildSecretScan）+ server/ops.mjs（renderSecretScanMd）+ 三入口 secret_scan |
 
 ### 已实现但**不设独立目录**（语义并入上述目录，避免索引重复）
 

@@ -4,8 +4,8 @@ import { z } from 'zod'
 import { openDb } from './db.mjs'
 import { createStore } from './store.mjs'
 import { loadConfig, saveConfig, maskToken } from './config.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline, renderTestReportMd } from './ops.mjs'
-import { setupWorkspace, getWorkspacePrompt, cleanupWorkspace } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline, renderTestReportMd, setupWorkspace, getWorkspacePrompt, cleanupWorkspace, renderSecretScanMd } from './ops.mjs'
+import { AppError, CODES } from './errors.mjs'
 import { startAgentRun, retryAndDispatch } from './agent.mjs'
 import { resolveRepoDir, pickBranchForCommit } from './git.mjs'
 import { saveUpload } from './uploads.mjs'
@@ -995,6 +995,39 @@ export function createMcpServer({ store }) {
       const n = store.resolveRef(String(node))
       const mindmap = store.buildMindmap(n.id, { scope, maxDepth: maxDepth === undefined ? null : maxDepth })
       const text = store.normalizeFormat(format) === 'md' ? renderMindmapMd(mindmap) : JSON.stringify(mindmap, null, 2)
+      return { content: [{ type: 'text', text }] }
+    })
+  )
+
+  server.tool(
+    'secret_scan',
+    '文档敏感信息扫描：只读扫描节点（含可选子树）的文档正文，命中 API Key / Token / 私钥等模式时给出稳定规则名与脱敏证据；不落表、不动 revision，输出绝不回显凭据原值',
+    {
+      node: z.union([z.number(), z.string()]),
+      // scope / format 放宽到 any，让非字符串入参也进入 handler，由 store.normalizeScope /
+      // normalizeFormat 统一报 VALIDATION_FAILED；用 z.string() 会在协议层先抛 -32602，
+      // 与 HTTP / CLI 的稳定错误契约不一致。
+      // 数组会被 MCP SDK 的单值参数解析折叠成首元素，这里用 preprocess 保留原数组形态，
+      // 避免 `format: ['md']` 被静默当成合法字符串。
+      scope: z.any().optional(),
+      format: z.any().optional()
+    },
+    mcpValidate(async ({ node, scope, format }) => {
+      // MCP SDK 的参数兼容层会把 `['md']` 这类单元素数组折叠成 `md`，
+      // 因此不能只在 normalizeFormat 里校验字符串；这里先把数组 / 对象形态明确拒绝，
+      // 保证任何非字符串入参都走统一的 VALIDATION_FAILED，而不是静默当成合法值。
+      for (const [key, value] of [
+        ['scope', scope],
+        ['format', format]
+      ]) {
+        if (value !== undefined && value !== null && typeof value !== 'string') {
+          const allowed = key === 'scope' ? ['self', 'subtree'] : ['json', 'md']
+          throw new AppError(CODES.VALIDATION_FAILED, `${key} 需要是字符串`, { [key]: value, allowed })
+        }
+      }
+      const n = store.resolveRef(String(node))
+      const scan = store.buildSecretScan(n.id, { scope })
+      const text = store.normalizeFormat(format) === 'md' ? renderSecretScanMd(scan) : JSON.stringify(scan, null, 2)
       return { content: [{ type: 'text', text }] }
     })
   )
