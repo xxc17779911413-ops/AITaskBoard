@@ -436,7 +436,29 @@ export function createStore(db, options = {}) {
     }
   }
 
-  function documentOverview({ projectId = null, status = null, q = null, docName = null, fill = null } = {}) {
+  /**
+   * 项目引用解析（HTTP / CLI / MCP 共用）：
+   * - null / 空串：不限定项目（全库范围）
+   * - 命中 id 或路径：返回该 project 的 id
+   * - 未知 id / 未知路径：视为「未知项目」→ 空态（不抛 NOT_FOUND / PATH_NOT_FOUND）
+   * - 路径歧义仍抛 PATH_AMBIGUOUS（歧义不是「未知」）
+   */
+  function resolveProjectScope(ref) {
+    const asText = ref === null || ref === undefined ? '' : String(ref).trim()
+    if (asText === '') return { projectId: null, scopeId: null, empty: false }
+    if (/^\d+$/.test(asText)) {
+      const row = db.prepare('SELECT id FROM nodes WHERE id = ?').get(Number(asText))
+      return { projectId: row ? row.id : null, scopeId: Number(asText), empty: !row }
+    }
+    try {
+      return { projectId: resolveRef(asText).id, scopeId: resolveRef(asText).id, empty: false }
+    } catch (e) {
+      if (e && e.code === CODES.PATH_NOT_FOUND) return { projectId: null, scopeId: null, empty: true }
+      throw e
+    }
+  }
+
+  function documentOverview({ projectId = null, projectRef = undefined, status = null, q = null, docName = null, fill = null } = {}) {
     const fillValue = fill === null || fill === undefined || fill === '' ? null : String(fill)
     if (fillValue !== null && !DOCUMENT_FILL_VALUES.includes(fillValue)) {
       throw new AppError(CODES.VALIDATION_FAILED, `未知文档填充筛选 ${fill}`, {
@@ -444,7 +466,17 @@ export function createStore(db, options = {}) {
         allowed: DOCUMENT_FILL_VALUES
       })
     }
-    const requirements = listRequirements({ projectId, status })
+    let scopeProjectId = projectId
+    let emptyScope = false
+    if (projectRef !== undefined) {
+      const scope = resolveProjectScope(projectRef)
+      scopeProjectId = scope.scopeId
+      emptyScope = scope.empty
+      projectId = scope.projectId
+    }
+    // status 先独立校验，未知项目空态也要与已知项目用同一套值域口径
+    if (status) assertRequirementStatus(status)
+    const requirements = emptyScope ? [] : listRequirements({ projectId: scopeProjectId, status })
     const expectedNames = requirementDocNames()
     const query = q === null || q === undefined ? '' : String(q).trim().toLowerCase()
     const nameFilter = docName === null || docName === undefined ? '' : String(docName).trim()
@@ -506,7 +538,7 @@ export function createStore(db, options = {}) {
     const requiredSlots = requirements.length * expectedNames.length
 
     return {
-      scope: { projectId, status: status || null },
+      scope: { projectId: scopeProjectId, status: status || null },
       expectedDocNames: expectedNames,
       summary: {
         requirementCount: requirements.length,
@@ -2814,6 +2846,7 @@ export function createStore(db, options = {}) {
     transitionRequirement,
     requirementSummary,
     documentOverview,
+    resolveProjectScope,
     REQUIREMENT_TRANSITIONS,
     getNode: (id) => nodeVO(rawNode(id)),
     resolveRef,

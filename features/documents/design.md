@@ -44,6 +44,8 @@ reorderDocuments(nodeId, orderedIds)       // → DocVO[]
 - `gaps` 逐需求 × 逐核心文档计算缺口；`gapType=missing` 表示槽位未关联，`gapType=empty` 表示已关联但正文空白。
 - `summary` 同时给出槽位总数、已关联、已填写、空白、未关联、缺口需求数与筛选后条数；筛选后的 `summary.filtered*` 与实际列表长度一致。
 - `fill` 只接受 `filled|empty`，非法值 `VALIDATION_FAILED`；未知 `projectId` 返回空态而不是全库。
+- **未知项目三入口统一**：`store.resolveProjectScope(ref)` 是项目引用的唯一解析点——命中 id / 路径返回其 id，未知 id / 未知路径返回空态（不再抛 `NOT_FOUND` / `PATH_NOT_FOUND`），空串表示不限定项目。HTTP / CLI / MCP 的 `documentOverview` 都传 `projectRef` 走这一条路径，保证同一入参在三入口得到逐字段一致的结论（歧义路径仍抛 `PATH_AMBIGUOUS`）。
+- **筛选态 KPI**：`q` / `docName` / `fill` 任一存在时，Web 顶部「文档数 / 缺口」改用后端已返回的 `filteredDocumentCount` / `filteredGapCount`，与表格行数、缺口面板条数保持一致；无筛选时才展示 scope 级全量统计（`web/src/documentKpi.js`）。
 
 HTTP / CLI / MCP 只做参数装配；Web 的「文档管理」页用该聚合做检索、缺口对账与需求定位，
 点击后仍通过 `DocPane` 走原有文档编辑链路，避免第二套编辑器。

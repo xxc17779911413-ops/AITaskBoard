@@ -317,16 +317,14 @@ export async function run(argv) {
       json(store.transitionRequirement(store.resolveRef(ref).id, { status: values.status, actor: by }))
       break
     case 'document overview': {
-      const projectId = values.project ? store.resolveRef(values.project).id : null
-      json(
-        store.documentOverview({
-          projectId,
-          status: values.status || null,
-          q: values.q || null,
-          docName: values['doc-name'] || null,
-          fill: values.fill || null
-        })
-      )
+      // 未知项目与 HTTP / MCP 同口径：走 store.resolveProjectScope 空态，而不是 resolveRef 抛错
+      json(store.documentOverview({
+        projectRef: values.project,
+        status: values.status || null,
+        q: values.q || null,
+        docName: values['doc-name'] || null,
+        fill: values.fill || null
+      }))
       break
     }
     case 'attr list':

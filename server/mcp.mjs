@@ -175,8 +175,14 @@ export function createMcpServer({ store }) {
       fill: z.string().optional()
     },
     mcpValidate(async ({ project, status, q, docName, fill }) => {
-      const projectId = project ? store.resolveRef(project).id : null
-      const data = store.documentOverview({ projectId, status: status || null, q: q || null, docName: docName || null, fill: fill || null })
+      // 未知项目与 HTTP / CLI 同口径：走 store.resolveProjectScope 空态，而不是 resolveRef 抛错
+      const data = store.documentOverview({
+        projectRef: project,
+        status: status || null,
+        q: q || null,
+        docName: docName || null,
+        fill: fill || null
+      })
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] }
     })
   )

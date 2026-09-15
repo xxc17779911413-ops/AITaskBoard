@@ -76,3 +76,52 @@ test('document overview：纯读聚合不产生 revision', async () => {
   assert.equal(store.getRevision(), before)
   tmp.cleanup()
 })
+
+test('document overview：未知项目引用解析为空态，而不是 NOT_FOUND / PATH_NOT_FOUND', async () => {
+  const { tmp, store, p1 } = await setup()
+  // 数字 id 不存在 → 空态
+  const byId = store.documentOverview({ projectRef: 999999 })
+  assert.equal(byId.scope.projectId, 999999)
+  assert.equal(byId.summary.requirementCount, 0)
+  assert.deepEqual(byId.items, [])
+  assert.deepEqual(byId.gaps, [])
+  // 字符串 id 不存在 → 同样空态，且 scope 回显解析出的 id
+  const textId = store.documentOverview({ projectRef: '999999' })
+  assert.equal(textId.scope.projectId, 999999)
+  assert.equal(textId.summary.requirementCount, 0)
+  // 路径不存在 → 空态（不是 PATH_NOT_FOUND）
+  const byPath = store.documentOverview({ projectRef: '不存在的项目' })
+  assert.equal(byPath.summary.requirementCount, 0)
+  assert.deepEqual(byPath.items, [])
+  // 未知项目下非法 status / fill 仍按业务值域拒绝，而不是被空态吞掉
+  assert.throws(() => store.documentOverview({ projectRef: 999999, status: 'bogus' }), /VALIDATION_FAILED/)
+  assert.throws(() => store.documentOverview({ projectRef: 999999, fill: 'bogus' }), /VALIDATION_FAILED/)
+  // resolveProjectScope 三态显式可断言：命中 / 空态 / 不限项目
+  assert.deepEqual(store.resolveProjectScope(null), { projectId: null, scopeId: null, empty: false })
+  assert.deepEqual(store.resolveProjectScope(''), { projectId: null, scopeId: null, empty: false })
+  assert.deepEqual(store.resolveProjectScope(p1.id), { projectId: p1.id, scopeId: p1.id, empty: false })
+  assert.equal(store.resolveProjectScope(999999).empty, true)
+  assert.equal(store.resolveProjectScope('不存在的项目').empty, true)
+  tmp.cleanup()
+})
+
+test('document overview：筛选态 KPI 与列表 / 缺口逐条对账', async () => {
+  const { tmp, store, p1, a, b } = await setup()
+  store.upsertDocument(a.id, '需求内容', '充电订单导出')
+  store.upsertDocument(b.id, '需求内容', '供电服务')
+  store.upsertDocument(b.id, '概要设计', '订单导出设计')
+
+  for (const filter of [
+    { q: '导出' },
+    { docName: '概要设计' },
+    { fill: 'filled' },
+    { fill: 'empty' },
+    { docName: '概要设计', fill: 'empty', q: '订单' }
+  ]) {
+    const out = store.documentOverview({ projectId: p1.id, ...filter })
+    // 顶部 KPI 消费的 filtered* 必须等于表格 / 缺口面板实际行数
+    assert.equal(out.summary.filteredDocumentCount, out.items.length)
+    assert.equal(out.summary.filteredGapCount, out.gaps.length)
+  }
+  tmp.cleanup()
+})

@@ -236,6 +236,9 @@ curl -s 'http://127.0.0.1:3210/api/documents/overview?projectId=1&docName=概要
 
 > `fill` 只接受 `filled` / `empty`，非法值返回 `400 VALIDATION_FAILED`。
 > 聚合不写库、不动 revision；点击文档后仍复用原有文档编辑链路。
+> 未知 `projectId` / 未知项目路径一律返回**空态**（`requirementCount=0`、`items=[]`、`gaps=[]`），
+> HTTP / CLI / MCP 三入口同口径，不再抛 `NOT_FOUND` / `PATH_NOT_FOUND`。
+> 叠加 `q` / `docName` / `fill` 筛选后，顶部 KPI 取 `filteredDocumentCount` / `filteredGapCount`，与列表一致。
 
 ## 幂等写入（AI 首选）
 

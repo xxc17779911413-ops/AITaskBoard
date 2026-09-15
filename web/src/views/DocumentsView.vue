@@ -16,13 +16,7 @@
     </div>
 
     <div class="summary">
-      <el-statistic title="需求数" :value="summary.requirementCount || 0" />
-      <el-statistic title="文档数" :value="summary.documentCount || 0" />
-      <el-statistic title="核心槽位" :value="summary.requiredSlotCount || 0" />
-      <el-statistic title="已填写核心" :value="summary.filledRequiredSlotCount || 0" />
-      <el-statistic title="空白核心" :value="summary.emptyRequiredSlotCount || 0" />
-      <el-statistic title="未关联核心" :value="summary.unlinkedRequiredSlotCount || 0" />
-      <el-statistic title="缺口需求" :value="summary.gapRequirementCount || 0" />
+      <el-statistic v-for="kpi in kpis" :key="kpi.key" :title="kpi.title" :value="kpi.value" />
     </div>
 
     <div class="panes">
@@ -71,9 +65,10 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import api from '../api.js'
 import DocPane from '../components/DocPane.vue'
+import { buildDocumentKpi } from '../documentKpi.js'
 
 const loading = ref(false)
 const projects = ref([])
@@ -87,6 +82,10 @@ const items = ref([])
 const gaps = ref([])
 const docDrawer = ref(false)
 const selectedNode = ref(null)
+
+// 一旦叠加结果集筛选，KPI 就与表格 / 缺口面板共用 filtered* 口径，避免两处数字对不上
+const filtered = computed(() => Boolean(q.value || docName.value || fill.value))
+const kpis = computed(() => buildDocumentKpi(summary.value, { filtered: filtered.value }))
 
 async function loadProjects() {
   const tree = await api.tree()
