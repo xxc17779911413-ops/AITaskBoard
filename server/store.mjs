@@ -1895,6 +1895,71 @@ export function createStore(db, options = {}) {
     }
   }
 
+  const OUTLINE_CHILD_TYPES = new Set(['requirement', 'subreq', 'group', 'task', 'defect'])
+
+  function collectOutlineTree(rootRow) {
+    const build = (row) => {
+      const children = db
+        .prepare('SELECT * FROM nodes WHERE parent_id = ? ORDER BY sort, id')
+        .all(row.id)
+        .filter((c) => OUTLINE_CHILD_TYPES.has(c.type))
+        .map(build)
+      return { id: row.id, name: row.name, type: row.type, status: row.status, children }
+    }
+    return build(rootRow)
+  }
+
+  function countOutlineNodes(tree) {
+    return 1 + tree.children.reduce((sum, c) => sum + countOutlineNodes(c), 0)
+  }
+
+  /**
+   * 概要设计大纲聚合：对 requirement / subreq（scope=self|subtree）推导
+   * 结构树 + 节点计数，供 ops 渲染 markdown 骨架 / mermaid 思维导图。
+   * 与需求就绪门禁同口径：非需求类型 self → 提示改用 subtree；子树无需求 → 空态。
+   */
+  function buildDesignOutline(nodeId, { scope = 'self' } = {}) {
+    const root = rawNode(nodeId)
+    const effectiveScope = normalizeScope(scope)
+    const ids = effectiveScope === 'subtree' ? subtreeIds(nodeId) : [nodeId]
+    const unitRows = ids.map((id) => rawNode(id)).filter((r) => READINESS_UNIT_TYPES.has(r.type))
+    if (unitRows.length === 0 && effectiveScope === 'self' && !READINESS_UNIT_TYPES.has(root.type)) {
+      const subtreeUnits = subtreeIds(nodeId)
+        .map((id) => db.prepare('SELECT id,type FROM nodes WHERE id = ?').get(id))
+        .filter((r) => r && READINESS_UNIT_TYPES.has(r.type))
+      throw new AppError(
+        CODES.VALIDATION_FAILED,
+        subtreeUnits.length > 0
+          ? `${root.type} 本身不是需求节点，但子树里有 ${subtreeUnits.length} 个需求——如需推导概要设计请用 scope=subtree`
+          : `${root.type} 本身不是需求节点（概要设计只针对 requirement / subreq）`,
+        { nodeId: root.id, nodeType: root.type, subtreeUnits: subtreeUnits.length }
+      )
+    }
+
+    const units = unitRows.map((row) => {
+      const node = nodeVO(row)
+      const tree = collectOutlineTree(row)
+      return {
+        nodeId: node.id,
+        name: node.name,
+        type: node.type,
+        path: node.path,
+        tree,
+        nodeCount: countOutlineNodes(tree)
+      }
+    })
+
+    return {
+      node: { id: root.id, name: root.name, type: root.type },
+      scope: effectiveScope,
+      totals: {
+        units: units.length,
+        nodes: units.reduce((sum, u) => sum + u.nodeCount, 0)
+      },
+      units
+    }
+  }
+
   // ---------- 思维导图（树 → mermaid mindmap 的只读投影） ----------
   //
   // 任务树本身是层级结构，天然适合用导图俯瞰「需求拆成了哪些子需求 / 任务组 / 子任务」。
