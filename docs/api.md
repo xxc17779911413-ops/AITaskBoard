@@ -702,6 +702,33 @@ curl -s 'http://127.0.0.1:3210/api/nodes/1/secret-scan?format=md'
 
 ## 交付门禁（需求就绪 / 测试验收 / 上线治理的最终汇总）
 
+## 业务检查门禁（业务可验收性的只读判定）
+
+```bash
+# 业务可验收性：未关闭缺陷 + 启用中的 biz_check 用例最近结论
+curl -s http://127.0.0.1:3210/api/nodes/1/business-gate
+
+# 连子树的缺陷与业务检查用例一起判定
+curl -s 'http://127.0.0.1:3210/api/nodes/1/business-gate?scope=subtree'
+
+# markdown 可直接贴进 issue / 业务验收记录
+curl -s 'http://127.0.0.1:3210/api/nodes/1/business-gate?format=md'
+
+# CLI / MCP 等价入口
+# node bin/taskboard.js business gate "项目A/需求1" [--scope self|subtree] [--format json|md]
+# MCP: business_gate { node, scope?, format? }
+```
+
+> **判定口径**：`defect` 节点 `status` 为 `done` / `cancelled` 才算关闭，其余（含 `testing`）都是阻塞项；
+> `biz_check` 用例只认**最近一次**报告，`pass` 才通过，`running`（已派单未回写）与 `not_run`（从未执行）都阻塞。
+> 报告必须与用例 **kind 一致**才被采信：`createTestReport` 未传 `kind` 时沿用用例的 `kind`，
+> 显式传了不一致的 `kind` 直接 `400 VALIDATION_FAILED`；聚合侧也只认 `report.kind === case.kind`，
+> 因此老库里跨 kind 的历史报告视同未执行（不会拿 `regression` 的 pass 冒充业务检查结论）。
+> 范围内既无缺陷、也无启用中的 `biz_check` 用例时返回 `ready=null`（没有可判定对象，不伪造成通过）。
+> `blockers` 按 `open_defect` / `unpassed_case` 分型，便于调用方直接生成待办。
+
+## 交付门禁（需求就绪 / 测试验收 / 上线治理的最终汇总）
+
 ```bash
 # 单节点最终交付结论：来源为 readiness / acceptance / release 三段既有结论
 curl -s http://127.0.0.1:3210/api/nodes/1/delivery-gate

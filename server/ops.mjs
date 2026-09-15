@@ -75,6 +75,7 @@ export const TOOLS = [
   'release_check',
   'release_checklist',
   'release_sql_audit',
+  'business_gate',
   'runtime_list',
   'runtime_register',
   'runtime_heartbeat',
@@ -1900,6 +1901,46 @@ export function renderDeliverySnapshotMd(snapshot) {
  * 上线清单导出：把 buildReleaseChecklist 的聚合结果渲染成可贴进 issue / 上线单的 markdown。
  * 与 renderAcceptanceMd 同风格，便于一起贴进同一个验收 / 上线记录。
  */
+/**
+ * 业务检查门禁导出：把「缺陷清干净 + 业务检查用例通过」渲染成可贴进 issue / 上线单的 markdown。
+ * 与 renderReadinessMd / renderReleaseChecklistMd 同风格：**标题 + 一段结论 + 明细表**，纯读。
+ */
+export function renderBusinessGateMd(gate) {
+  const t = gate.totals
+  // 表格单元格转义：先转义反斜杠再转义竖线，否则含 `|` 或结尾 `\` 的名称会把表格切歪
+  // （与 renderDeliveryGateMd.cell() 同一坑，独立测试曾实测）。
+  const cell = (v) =>
+    String(v == null ? '' : v)
+      .replace(/\\/g, '\\\\')
+      .replace(/\r?\n/g, '<br>')
+      .replace(/\|/g, '\\|')
+  const lines = [
+    `# 业务检查：${gate.node.name}`,
+    '',
+    `- 范围：${gate.scope === 'subtree' ? '含子树' : '仅本节点'}`,
+    `- 缺陷：${t.defects} · 未关闭：${t.openDefects} · 已关闭：${t.closedDefects}`,
+    `- 业务检查用例：${t.cases} · 通过：${t.pass} · 执行中：${t.running} · 未执行：${t.notRun}`,
+    `- 就绪结论：${gate.ready == null ? '—（没有可判定的缺陷或业务检查用例）' : gate.ready ? '✅ 业务可验收' : '❌ 尚不可验收'}`,
+    ''
+  ]
+  if (gate.blockers.length > 0) {
+    lines.push('## 阻塞项', '', '| 类型 | 名称 | 说明 |', '|---|---|---|')
+    for (const b of gate.blockers) {
+      const detail = b.kind === 'open_defect' ? `缺陷未关闭（${b.status}）` : `业务检查最近结论：${b.latestStatus}`
+      lines.push(`| ${cell(b.kind === 'open_defect' ? '未关闭缺陷' : '业务检查')} | ${cell(b.name)} | ${cell(detail)} |`)
+    }
+    lines.push('')
+  }
+  lines.push('## 缺陷明细', '', '| 缺陷 | 状态 | 已关闭 |', '|---|---|---|')
+  if (gate.defects.length === 0) lines.push('| — | — | — |')
+  for (const d of gate.defects) lines.push(`| ${cell(d.name)} | ${cell(d.status)} | ${d.closed ? '是' : '否'} |`)
+  lines.push('')
+  lines.push('## 业务检查用例', '', '| 用例 | 最近结果 | 报告 |', '|---|---|---|')
+  if (gate.cases.length === 0) lines.push('| — | — | — |')
+  for (const c of gate.cases) lines.push(`| ${cell(c.name)} | ${cell(c.latestStatus)} | ${cell(c.latestReportId ?? '—')} |`)
+  return lines.join('\n')
+}
+
 export function renderReleaseChecklistMd(checklist) {
   const t = checklist.totals
   const kindLabels = { config: '上线配置', sql: '上线 SQL', check: '上线检查' }

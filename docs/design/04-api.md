@@ -107,6 +107,11 @@
 | Method | Path | 说明 |
 |---|---|---|
 | GET | `/api/nodes/:id/code-audit` | 代码检查：`?scope=self\|subtree`，`?format=json\|md`。对已登记提交的**新增代码行**（`git show --unified=0` 的 `+` 行）做只读静态审查：`danger`（合并冲突标记 / 私钥 / 硬编码凭据 / `eval` / 聚焦测试）阻塞 `ready=false`，`warn`（调试遗留 / lint 抑制 / 待办标记）只提示。`ready=null` 覆盖「无提交 / 无新增行 / 有提交读不到 / 扫描截断」四种空态——看不到 ≠ 通过；`totals.truncated` 标明是否因提交数超上限被截断。**硬编码凭据证据先脱敏再截断，任何输出不回显原值**；单条提交读取失败记 `items[].error` 不拖垮整体；**纯读、不 fetch、不落表、不动 revision** |
+### 业务检查门禁（业务可验收性的只读判定）
+
+| Method | Path | 说明 |
+|---|---|---|
+| GET | `/api/nodes/:id/business-gate` | 业务检查门禁：`?scope=self\|subtree`，`?format=json\|md`。判定范围内**未关闭缺陷**（`defect` 且 `status` ∉ `done`/`cancelled`）与**启用中的 `biz_check` 用例最近结论**（只认 `pass`，`running` / `not_run` 都阻塞）；只采信 `report.kind === case.kind` 的报告（跨 kind 的报告视同未执行，防假绿）；无缺陷且无启用用例时 `ready=null`；`blockers` 按 `open_defect` / `unpassed_case` 分型；**纯读聚合，不写库、不动 revision** |
 
 ### 交付门禁（需求就绪 / 测试验收 / 上线治理的最终汇总）
 

@@ -1342,22 +1342,27 @@ export function createStore(db, options = {}) {
     }
   }
 
-  /** 引用完整性：用例必须属于本节点，agent 任务必须存在 */
+  /**
+   * 引用完整性：用例必须属于本节点，agent 任务必须存在。
+   * 返回用例行（含 kind），供「报告 kind 必须与用例 kind 一致」的一致性校验复用。
+   */
   function assertReportRefs(nodeId, { caseId, runId }) {
+    let caseRow = null
     if (caseId != null) {
-      const c = db.prepare('SELECT id, node_id FROM test_cases WHERE id = ?').get(Number(caseId))
-      if (!c) throw new AppError(CODES.NOT_FOUND, `测试用例 ${caseId} 不存在`, { caseId })
-      if (c.node_id !== Number(nodeId)) {
+      caseRow = db.prepare('SELECT id, node_id, kind FROM test_cases WHERE id = ?').get(Number(caseId))
+      if (!caseRow) throw new AppError(CODES.NOT_FOUND, `测试用例 ${caseId} 不存在`, { caseId })
+      if (caseRow.node_id !== Number(nodeId)) {
         throw new AppError(CODES.VALIDATION_FAILED, `测试用例 ${caseId} 不属于节点 ${nodeId}`, {
           caseId: Number(caseId),
           nodeId: Number(nodeId),
-          caseNodeId: c.node_id
+          caseNodeId: caseRow.node_id
         })
       }
     }
     if (runId != null && !db.prepare('SELECT id FROM agent_runs WHERE id = ?').get(Number(runId))) {
       throw new AppError(CODES.NOT_FOUND, `agent 任务 ${runId} 不存在`, { runId })
     }
+    return { caseRow }
   }
 
   function createTestCase(nodeId, { name, kind = 'regression', prompt, expectation = null, enabled = 1 }, by = 'user') {
@@ -1470,17 +1475,30 @@ export function createStore(db, options = {}) {
   }
 
   /** 开一条报告（一次执行 = 一行）；run_id 关联 agent 任务，便于从报告回看执行日志 */
-  function createTestReport(nodeId, { caseId = null, runId = null, kind = 'regression', status = 'running', summary = null, detail = null }, by = 'user') {
+  function createTestReport(nodeId, { caseId = null, runId = null, kind = undefined, status = 'running', summary = null, detail = null }, by = 'user') {
     rawNode(nodeId)
-    assertCaseKind(kind)
     assertReportStatus(status)
-    assertReportRefs(nodeId, { caseId, runId })
+    const { caseRow } = assertReportRefs(nodeId, { caseId, runId })
+    // 报告的 kind 与所挂用例的 kind 是**同一个事实**，因此：
+    //   1) 未显式传 kind 时直接沿用用例的 kind（不再默认 regression）——避免「少传一个字段
+    //      就把 regression 结论挂到 biz_check 用例上」的假绿（独立验收发现的边界）；
+    //   2) 显式传了 kind 时必须是同一值，否则拒绝——错配报告一律不入库；
+    //   3) 没有 caseId（用例已删除 / 临时跑一次）时才回落到默认 regression。
+    const effectiveKind = kind == null ? (caseRow ? caseRow.kind : 'regression') : kind
+    assertCaseKind(effectiveKind)
+    if (caseRow && caseRow.kind !== effectiveKind) {
+      throw new AppError(
+        CODES.VALIDATION_FAILED,
+        `报告类型 ${effectiveKind} 与用例「${caseRow.id}」的类型 ${caseRow.kind} 不一致`,
+        { caseId: Number(caseId), caseKind: caseRow.kind, reportKind: effectiveKind }
+      )
+    }
     const ts = now()
     const info = db
       .prepare(
         'INSERT INTO test_reports (node_id,case_id,run_id,kind,status,summary,detail,started_at,finished_at,updated_at,created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
       )
-      .run(nodeId, caseId, runId, kind, status, summary, detail, ts, status === 'running' ? null : ts, ts, actor(by))
+      .run(nodeId, caseId, runId, effectiveKind, status, summary, detail, ts, status === 'running' ? null : ts, ts, actor(by))
     bumpRevision()
     return testReportVO(db.prepare('SELECT * FROM test_reports WHERE id = ?').get(Number(info.lastInsertRowid)))
   }
@@ -1493,6 +1511,29 @@ export function createStore(db, options = {}) {
       .filter((r) => (caseId ? r.case_id === Number(caseId) : true))
       .filter((r) => (kind ? r.kind === kind : true))
       .map(testReportVO)
+  }
+
+  /**
+   * 每个用例的「最近一条报告」。（一次执行 = 一行，`id` 倒序取第一条。）
+   *
+   * **只接受 `report.kind === case.kind` 的报告**：报告的 kind 是这份结论属于哪条用例的
+   * 一致性凭据。若把 `regression` 报告算到 `biz_check` 用例上，业务检查门禁会拿到一个
+   * 与业务无关的 pass 并判定「业务可验收」——独立验收实测的假绿。
+   * 写入侧 `createTestReport` 已经拦住这种错配；这里再收窄一次读取口径，
+   * 是为了让**已经存在**的不一致历史行不再被信任（老库不受写入侧校验保护）。
+   * 用例被删除后报告 `case_id` 置空，本函数直接跳过，与既有「历史报告保留但不再参与聚合」一致。
+   */
+  function latestReportByCase(caseVOs, reports) {
+    const kindByCase = new Map(caseVOs.map((c) => [c.id, c.kind]))
+    const latest = new Map()
+    for (const r of reports) {
+      if (r.caseId == null) continue
+      const caseKind = kindByCase.get(r.caseId)
+      if (caseKind == null) continue
+      if (r.kind !== caseKind) continue
+      if (!latest.has(r.caseId)) latest.set(r.caseId, r)
+    }
+    return latest
   }
 
   function getTestReport(id) {
@@ -1619,11 +1660,8 @@ export function createStore(db, options = {}) {
       .all(...ids)
       .map(testCaseVO)
     const reports = db.prepare(`SELECT * FROM test_reports WHERE node_id IN (${ph}) ORDER BY id DESC`).all(...ids).map(testReportVO)
-    const latestByCase = new Map()
-    for (const r of reports) {
-      if (r.caseId == null) continue
-      if (!latestByCase.has(r.caseId)) latestByCase.set(r.caseId, r)
-    }
+    // 只认 kind 与用例一致的报告，避免跨 kind 的结论冒充本用例结论（见 latestReportByCase）
+    const latestByCase = latestReportByCase(cases, reports)
     const items = cases.map((c) => {
       const latest = latestByCase.get(c.id) || null
       return {
@@ -2829,6 +2867,105 @@ export function createStore(db, options = {}) {
       items,
       blockers,
       warnings
+    }
+  }
+
+  // ---------- 业务检查门禁（业务可验收性的只读判定） ----------
+  //
+  // 上线治理把「业务检查」的**执行**挂在 test_cases 的 `biz_check` 用例上（见
+  // features/release-governance/design.md R1），但此前没有任何聚合回答「业务侧到底能不能验收」：
+  // 验收报告按 kind 不分桶（业务检查混在回归里），上线清单只把 biz_check 当作上线证据之一。
+  // 本门禁补上这条独立结论，只回答两件事：
+  //   1) 范围内**未关闭的缺陷**（defect 且 status 不在 done/cancelled）有没有清干净；
+  //   2) 范围内启用中的 `biz_check` 用例最近一次结论是否都是 `pass`。
+  // 纯读聚合：不落表、不 bump revision——结论必须随源数据实时变化，避免第二份真相。
+
+  /** 缺陷视为「已关闭」的状态：与 config.status.allowed.defect 的终态一致。 */
+  const CLOSED_DEFECT_STATUSES = new Set(['done', 'cancelled'])
+
+  function buildBusinessGate(nodeId, { scope = 'self' } = {}) {
+    const root = rawNode(nodeId)
+    const effectiveScope = normalizeScope(scope)
+    const ids = effectiveScope === 'subtree' ? subtreeIds(nodeId) : [nodeId]
+    const ph = ids.map(() => '?').join(',')
+
+    // 缺陷：只把「未闭合」的算阻塞，终态（done / cancelled）不再拦住业务验收。
+    const defectRows = db
+      .prepare(`SELECT * FROM nodes WHERE id IN (${ph}) AND type = 'defect' ORDER BY sort, id`)
+      .all(...ids)
+    const openDefects = defectRows.filter((r) => !CLOSED_DEFECT_STATUSES.has(r.status))
+
+    // 业务检查用例：与 buildReleaseChecklist / runReleaseChecks 的 kind 口径一致，
+    // 只算启用中的用例（停用的既不会被派单，也不该阻塞业务验收）。
+    const checkCases = db
+      .prepare(`SELECT * FROM test_cases WHERE node_id IN (${ph}) AND enabled = 1 ORDER BY node_id, sort, id`)
+      .all(...ids)
+      .map(testCaseVO)
+      .filter((c) => c.kind === 'biz_check')
+
+    // 每个用例只取最近一次报告（一次执行 = 一行），避免历史 pass 掩盖后来的 fail。
+    const reports = db
+      .prepare(`SELECT * FROM test_reports WHERE node_id IN (${ph}) ORDER BY id DESC`)
+      .all(...ids)
+      .map(testReportVO)
+    // 只认 kind 与用例一致的报告：跨 kind 的 pass 不得把业务检查判成通过（见 latestReportByCase）
+    const latestByCase = latestReportByCase(checkCases, reports)
+    const cases = checkCases.map((c) => {
+      const latest = latestByCase.get(c.id) || null
+      return {
+        id: c.id,
+        nodeId: c.nodeId,
+        name: c.name,
+        expectation: c.expectation,
+        latestStatus: latest ? latest.status : 'not_run',
+        latestReportId: latest ? latest.id : null
+      }
+    })
+    // 与 acceptance / delivery-gate 同源口径：只有 pass 才算通过；
+    // running（已派单未回写）与 not_run（从未执行）都不是可交付证据。
+    const blockingCases = cases.filter((c) => c.latestStatus !== 'pass')
+
+    const blockers = [
+      ...openDefects.map((r) => ({
+        kind: 'open_defect',
+        nodeId: r.id,
+        name: r.name,
+        status: r.status
+      })),
+      ...blockingCases.map((c) => ({
+        kind: 'unpassed_case',
+        nodeId: c.nodeId,
+        name: c.name,
+        latestStatus: c.latestStatus,
+        latestReportId: c.latestReportId
+      }))
+    ]
+
+    // 空态：范围内既没有缺陷、也没有启用中的 biz_check 用例 → 没有可判定对象。
+    const hasJudgement = defectRows.length > 0 || cases.length > 0
+    return {
+      node: { id: root.id, name: root.name, type: root.type },
+      scope: effectiveScope,
+      ready: hasJudgement ? blockers.length === 0 : null,
+      totals: {
+        defects: defectRows.length,
+        openDefects: openDefects.length,
+        closedDefects: defectRows.length - openDefects.length,
+        cases: cases.length,
+        pass: cases.filter((c) => c.latestStatus === 'pass').length,
+        running: cases.filter((c) => c.latestStatus === 'running').length,
+        notRun: cases.filter((c) => c.latestStatus === 'not_run').length,
+        blockingCases: blockingCases.length
+      },
+      blockers,
+      defects: defectRows.map((r) => ({
+        id: r.id,
+        nodeId: r.id,
+        name: r.name,
+        status: r.status,
+        closed: CLOSED_DEFECT_STATUSES.has(r.status)
+      })),
+      cases
     }
   }
 
@@ -4108,6 +4245,8 @@ export function createStore(db, options = {}) {
     buildReleaseChecklist,
     // 上线 SQL 风险审查（上线检查的静态前置判定）
     buildReleaseSqlAudit,
+    // 业务检查门禁（业务可验收性的只读判定）
+    buildBusinessGate,
     // 交付门禁（汇总需求就绪 / 验收 / 上线结论）
     buildDeliveryGate,
     captureDeliverySnapshot,

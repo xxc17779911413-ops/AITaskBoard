@@ -751,6 +751,51 @@ test('上线治理：必做项 done 但检查用例未执行 → 清单未就绪
 
 // ---------- 需求就绪门禁（需求管理闭环的前置判定） ----------
 
+// ---------- 业务检查门禁（业务可验收性的只读判定） ----------
+
+test('业务检查门禁：未关闭缺陷 + 未跑用例 → 阻塞；关闭并跑通后放行（HTTP 全链路）', async () => {
+  const { tmp, store, post, get, patch, base, close } = await setup()
+  const p = await post('/api/nodes', { type: 'project', name: 'P' })
+  const s = await post('/api/nodes', { parentId: p.id, type: 'requirement', name: 'R' })
+  const g = await post('/api/nodes', { parentId: s.id, type: 'group', name: 'G' })
+  const d = await post('/api/nodes', { parentId: g.id, type: 'defect', name: 'D' })
+  const c = await post(`/api/nodes/${s.id}/test-cases/upsert`, { name: '下单主流程', prompt: 'p', kind: 'biz_check' })
+
+  // 未关闭缺陷 + 用例未执行 → 阻塞（两条 blocker 各占一键）
+  const gate = await get(`/api/nodes/${s.id}/business-gate?scope=subtree`)
+  assert.equal(gate.ready, false)
+  assert.equal(gate.totals.openDefects, 1)
+  assert.equal(gate.totals.notRun, 1)
+  assert.deepEqual(gate.blockers.map((b) => b.kind).sort(), ['open_defect', 'unpassed_case'])
+
+  // 关闭缺陷 + 跑通用例 → 放行
+  await patch(`/api/nodes/${d.id}`, { status: 'done' })
+  // 报告由派单执行产生（HTTP 没有裸建报告的入口），这里用 store 落一条 pass 报告后回到 HTTP 断言
+  const rep = store.createTestReport(s.id, { caseId: c.id, kind: 'biz_check' })
+  store.finishTestReport(rep.id, { status: 'pass' })
+  const ready = await get(`/api/nodes/${s.id}/business-gate?scope=subtree`)
+  assert.equal(ready.ready, true)
+  assert.deepEqual(ready.blockers, [])
+
+  // 空态：只有 self 上没有缺陷 / 用例时 ready=null
+  assert.equal((await get(`/api/nodes/${p.id}/business-gate`)).ready, null)
+
+  // md 形态
+  const res = await fetch(`${base}/api/nodes/${s.id}/business-gate?scope=subtree&format=md`)
+  assert.equal(res.status, 200)
+  assert.match(res.headers.get('content-type') || '', /text\/markdown/)
+  assert.ok((await res.text()).startsWith('# 业务检查'))
+
+  // 非法 scope → 400 VALIDATION_FAILED
+  const rawRes = await fetch(`${base}/api/nodes/${s.id}/business-gate?scope=Subtree`)
+  assert.equal(rawRes.status, 400)
+  assert.equal((await rawRes.json()).error.code, 'VALIDATION_FAILED')
+
+  await close()
+  tmp.cleanup()
+})
+
+
 test('就绪门禁：全链路（未就绪 → 补文档 + 用例 → 就绪）', async () => {
   const { tmp, post, get, close } = await setup()
   const p = await post('/api/nodes', { type: 'project', name: 'P' })
