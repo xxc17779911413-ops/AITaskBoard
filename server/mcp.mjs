@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { openDb } from './db.mjs'
 import { createStore } from './store.mjs'
 import { loadConfig, saveConfig, maskToken } from './config.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline, renderTestReportMd, setupWorkspace, getWorkspacePrompt, cleanupWorkspace, renderSecretScanMd, renderDeliverySnapshotMd, renderReleaseSqlAuditMd, renderCodeAuditMd, getNodeCodeAudit, renderBusinessGateMd, renderWorkflowMapMd } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline, renderTestReportMd, setupWorkspace, getWorkspacePrompt, cleanupWorkspace, renderSecretScanMd, renderDeliverySnapshotMd, renderReleaseSqlAuditMd, renderCodeAuditMd, getNodeCodeAudit, renderBusinessGateMd, renderWorkflowMapMd, getNodePushGate, renderPushGateMd, buildDeliveryGateFull } from './ops.mjs'
 import { AppError, CODES } from './errors.mjs'
 import { startAgentRun, retryAndDispatch } from './agent.mjs'
 import { resolveRepoDir, pickBranchForCommit } from './git.mjs'
@@ -368,6 +368,17 @@ export function createMcpServer({ store }) {
     mcpValidate(async ({ ref, scope, branches }) => {
       const data = await getNodeTracks(store, ref, { scope, branches: !!branches })
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] }
+    })
+  )
+
+  server.tool(
+    'commit_push_gate',
+    '代码推送门禁：节点（含子树）下已登记提交是否已到远程（只读本地 ref，不 fetch / 不 push）；三态 pushed / not_pushed / unknown，unknown 同样阻塞但不冒充通过；format=md 返回可贴进 issue 的 markdown',
+    { ref: z.string(), scope: z.string().optional(), format: z.string().optional() },
+    mcpValidate(async ({ ref, scope, format }) => {
+      const gate = await getNodePushGate(store, ref, { scope })
+      const text = store.normalizeFormat(format) === 'md' ? renderPushGateMd(gate) : JSON.stringify(gate, null, 2)
+      return { content: [{ type: 'text', text }] }
     })
   )
 
@@ -1058,11 +1069,10 @@ export function createMcpServer({ store }) {
 
   server.tool(
     'delivery_gate',
-    '交付门禁：汇总需求就绪 / 测试验收 / 上线治理三段既有结论，给出唯一“能否交付”判定；format=md 返回可贴进 issue 的 markdown',
+    '交付门禁：汇总需求就绪 / 测试验收 / 上线治理 / 代码推送四段既有结论，给出唯一“能否交付”判定；format=md 返回可贴进 issue 的 markdown',
     { node: z.union([z.number(), z.string()]), scope: z.string().optional(), format: z.string().optional() },
     mcpValidate(async ({ node, scope, format }) => {
-      const n = store.resolveRef(String(node))
-      const gate = store.buildDeliveryGate(n.id, { scope })
+      const gate = await buildDeliveryGateFull(store, String(node), { scope })
       const text = store.normalizeFormat(format) === 'md' ? renderDeliveryGateMd(gate) : JSON.stringify(gate, null, 2)
       return { content: [{ type: 'text', text }] }
     })

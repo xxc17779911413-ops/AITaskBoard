@@ -53,6 +53,11 @@
     HTTP / CLI / MCP 三入口捕获 / 列表 / 单条读取全链路；MCP 写入操作者记录为 `mcp`（防审计身份被降级成 user）；
     Markdown 导出的标题 / 备注转义（反斜杠、竖线、CommonMark 全行结束符 LF/CRLF/CR）与注入防护；
     指纹只认证据集合：展示字段与时间戳审计元数据不触发漂移，节点 / 上线项改名与 no-op 重存保持 current，status/content 变化仍 drifted
+  - `delivery-gate`：交付门禁汇总四段既有结论——空证据 `unknown`（不伪造成可交付）、需求就绪但测试未执行 `not_ready`、`not_run`/`running` 显式分桶与 blocker 明细、四段通过 / 不适用不阻塞 `ready`、必做上线项未完成覆盖测试通过结论、停用用例不参与门禁；`scope=subtree` 联动；阻塞项展平到条目级；`scope`/`format` 非法值三入口统一 `VALIDATION_FAILED`；markdown 单元格转义；**纯读聚合不产生 revision**；能力清单登记
+  - `delivery-gate-push`：代码推送并入交付门禁——登记提交未 push / 无法判定（unknown）都阻塞交付且不冒充通过；push 后同一节点翻成 `ready`；范围内无登记提交时 push 来源 `not_applicable` 不阻塞；`scope=subtree` 纳入子树登记提交且同 `(repo,sha)` 只算一次；同步 `store.buildDeliveryGate` 漏传推送证据时不得放行；纯读含推送判定不产生 revision
+  - `delivery-gate-mcp`：MCP 真实协议调用 `delivery_gate`（JSON / md / subtree）、非法 `scope`/`format` 返回 `isError + VALIDATION_FAILED`、与 store / HTTP / CLI 逐字段一致
+  - `push-gate`：代码推送门禁——`commitPushState` 三态（已 push / 未 push / 无远程 / sha 本地不存在 / 短 sha）；聚合层 `getNodePushGate` 的空态 `ready=null`、`unknown` 阻塞但不冒充通过、`scope=subtree` 去重回填来源节点、非法 `scope` 拒绝、**纯读不产生 revision**、markdown 单元格转义、能力清单登记；**`reason` 契约（D1/D2 回归）**——未登记本地路径 → `repo-path-unset`、路径无效 → `repo-path-missing` 且 `detail` 带真实路径、本机 git 不可用 → `git-unavailable`（不再误报成路径问题）、四类可行动 reason 互不串味
+  - `push-gate-entrypoints`：三入口 1:1——HTTP `?format=md` 走 `text/markdown`、非法 `scope`/`format` 400 且 `error.code=VALIDATION_FAILED`；MCP 真实协议调用与 store 逐字段一致、非法值 `isError`；store / HTTP / CLI / MCP 四入口逐字段一致
   - `scope-validation`：`scope` 值域与聚合构建器横切校验；MCP 吃 `scope` 的全部工具（含 `node_diffs` / `node_tracks` / `commit_duplicates` / `release_check`）非法值均返回 `isError + VALIDATION_FAILED`，不泄漏 SDK `-32602`
   - `delivery-gate`：交付门禁汇总三段既有结论——空证据 `unknown`（不伪造成可交付）、需求就绪但测试未执行 `not_ready`、三段通过 / 不适用不阻塞 `ready`、必做上线项未完成覆盖测试通过结论；`scope=subtree` 联动；阻塞项展平到条目级；**纯读聚合不产生 revision**；markdown 渲染与能力清单登记
   - `workflow-map`：研发主线思维导图——阶段投影、四态 `pass/fail/pending/empty`、`scope=subtree` 多需求单元、非法 `scope` 拒绝、**纯读聚合不产生 revision**、上线分支稳定写引用、上线项与检查报告回写后状态翻转且只影响目标项、D1 裸项目/空白文档、D3 逐检查用例聚合、D4 `release_check` 上线项引用、markdown 渲染与能力清单登记

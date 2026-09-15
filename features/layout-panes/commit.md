@@ -20,3 +20,6 @@
 - fix(idea-plugin): 勾选 diff 不再连带恢复文档——移除 showDiffPane 的「组数≤1 就重铺对照布局」分支，显示 diff 只显示 diff（完整布局请用「对照布局」）
 - chore(idea-plugin): 增加 tab 残留诊断日志（hideDocsPane 前后枚举编辑器组，写 taskboard-plugin.log）
 - feat(idea-plugin): 节点树顶部新增按钮行——拷贝上下文（选中节点→文档+PRD 到剪贴板）/ 拷贝节点ID / 搜索定位（名称匹配展开选中）；状态行独立第二行
+- fix(layout-panes): Select 视图右侧详情面板改 JCEF 渲染 Markdown（新增 MarkdownRenderer，GFM：标题/列表/表格/引用/链接/分隔线；原始 HTML 经转义 provider 只作文本）——修复文档被当纯文本裸露 `##`/`- [..](..)`/`---` 的问题；JCEF 不可用仍降级 JTextArea
+- fix(layout-panes): 详情面板删除线样式兼容 GFM 的 .user-del 标记（渲染器输出的是 span.user-del 而非 del）
+- fix(layout-panes): 详情面板渲染失败的最外层兜底改为直接转义 <pre>，不再二次调用渲染器（避免自身抛异常打断 EDT）

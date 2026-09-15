@@ -100,7 +100,7 @@
           v-if="gate.decision === 'unknown'"
           type="info"
           :closable="false"
-          title="当前范围还没有可判定的交付证据（需求 / 用例 / 必做上线项都为空）"
+          title="当前范围还没有可判定的交付证据（需求 / 用例 / 必做上线项 / 登记提交都为空）"
           style="margin-bottom:10px"
         />
         <el-table :data="gate.sources || []" size="small">

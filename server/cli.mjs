@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util'
 import { openDb } from './db.mjs'
 import { createStore } from './store.mjs'
 import { loadConfig, saveConfig, maskToken, DB_PATH } from './config.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline, renderTestReportMd, setupWorkspace, getWorkspacePrompt, cleanupWorkspace, parseMaxParallelCli, renderSecretScanMd, renderDeliverySnapshotMd, renderReleaseSqlAuditMd, renderCodeAuditMd, getNodeCodeAudit, renderBusinessGateMd, renderWorkflowMapMd } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline, renderTestReportMd, setupWorkspace, getWorkspacePrompt, cleanupWorkspace, parseMaxParallelCli, renderSecretScanMd, renderDeliverySnapshotMd, renderReleaseSqlAuditMd, renderCodeAuditMd, getNodeCodeAudit, renderBusinessGateMd, renderWorkflowMapMd, getNodePushGate, renderPushGateMd, buildDeliveryGateFull } from './ops.mjs'
 import { startAgentRun, retryAndDispatch, waitForAgentRun } from './agent.mjs'
 import { saveUpload } from './uploads.mjs'
 
@@ -121,6 +121,7 @@ const HELP = `task-board <命令>
   commit list <ref> [--subtree]
   commit diff <cid>                  单个 commit 的 diff（文件列表 + patch）
   commit track <cid>                 检测提交是否已合入测试/预发/上线分支
+  push gate <ref> [--scope self|subtree] [--format json|md]   代码推送门禁（登记提交是否已到远程）
   node diffs <ref> [--scope self|subtree]   节点（含子树）聚合 diff（含来源节点）
   node tracks <ref> [--scope self|subtree]  节点（含子树）分支合并状态聚合
   repo list
@@ -162,6 +163,7 @@ const HELP = `task-board <命令>
   readiness check <ref> [--scope self|subtree] [--format json|md]   需求就绪门禁（需求内容 + 概要设计 + 可回归用例）
   mindmap <ref> [--scope self|subtree] [--max-depth N] [--format json|md]  思维导图（mermaid mindmap 投影；看整棵子树用 --scope subtree）
   delivery gate <ref> [--scope self|subtree] [--format json|md]     交付门禁（需求就绪 + 测试验收 + 上线治理的最终汇总）
+  delivery gate <ref> [--scope self|subtree] [--format json|md]     交付门禁（需求就绪 + 测试验收 + 上线治理 + 代码推送的最终汇总）
   release item list <ref> [--kind config|sql|check] [--status pending|ready|done|blocked|skipped]
   release item upsert <ref> --name <名> [--kind config|sql|check] [--content <内容>|--file <path>] [--rollback <回滚>] [--status s] [--optional]
   release item update <rid> [--name n] [--kind k] [--content c] [--rollback r] [--status s] [--required|--optional]
@@ -628,9 +630,7 @@ export async function run(argv) {
     // ---------- 交付门禁（`delivery gate <ref>`） ----------
     case 'delivery gate': {
       const node = store.resolveRef(ref)
-      const gate = store.buildDeliveryGate(node.id, {
-        scope: values.scope
-      })
+      const gate = await buildDeliveryGateFull(store, node.id, { scope: values.scope })
       if (store.normalizeFormat(values.format) === 'md') process.stdout.write(renderDeliveryGateMd(gate) + '\n')
       else json(gate)
       break
@@ -878,6 +878,12 @@ export async function run(argv) {
     case 'node tracks':
       json(await getNodeTracks(store, ref, { scope: values.scope, branches: !!values.branches }))
       break
+    case 'push gate': {
+      const gate = await getNodePushGate(store, ref, { scope: values.scope })
+      if (store.normalizeFormat(values.format) === 'md') process.stdout.write(renderPushGateMd(gate) + '\n')
+      else json(gate)
+      break
+    }
     case 'repo list':
       json(store.listRepos())
       break

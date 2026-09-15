@@ -15,3 +15,4 @@
 - feat(node-crud): 节点树右键菜单支持增删改（新建子节点/重命名/删除，类型约束与后端一致，完成后自动刷新）
 - fix(commit-branch): 开发分支推断更准——merge 提交归属合入目标分支、普通提交优先匹配 message 需求编号，避免误判最长的集成分支；显式传 branch 视为纠正可覆盖已有值（overwriteBranch）；补 git-track UT
 - fix(commit-branch): 需求编号改按版本号边界匹配（1.1.1 不再命中 11.1.1）；补 GitHub PR merge 归属（subject 里的源分支）；明确 squash merge 无法可靠推断的约束并保留显式 branch 覆盖路径；补 3 条 git-track UT
+- fix(merge-flow): 详情面板 Markdown 渲染收口——删除从未调用的死代码 mdToHtml/inlineMd（纯文本降级 mdToText 只去 # 与围栏、语义全丢是本次现象根因）；改为 JCEF + org.intellij.markdown，绕开 JEditorPane BoxView 死循环的同时恢复 Markdown 呈现

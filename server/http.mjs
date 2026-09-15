@@ -1,7 +1,7 @@
 import express from 'express'
 import fs from 'node:fs'
 import { AppError, CODES } from './errors.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, approveAndMerge, getMergeStatus, previewMerges, mergeUpstream, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline, renderTestReportMd, setupWorkspace, getWorkspacePrompt, cleanupWorkspace, renderSecretScanMd, renderDeliverySnapshotMd, renderReleaseSqlAuditMd, renderCodeAuditMd, getNodeCodeAudit, renderBusinessGateMd, renderWorkflowMapMd } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, approveAndMerge, getMergeStatus, previewMerges, mergeUpstream, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline, renderTestReportMd, setupWorkspace, getWorkspacePrompt, cleanupWorkspace, renderSecretScanMd, renderDeliverySnapshotMd, renderReleaseSqlAuditMd, renderCodeAuditMd, getNodeCodeAudit, renderBusinessGateMd, renderWorkflowMapMd, getNodePushGate, renderPushGateMd, buildDeliveryGateFull } from './ops.mjs'
 import { startAgentRun, retryAndDispatch } from './agent.mjs'
 import { resolveRepoDir, pickBranchForCommit } from './git.mjs'
 import { loadConfig, saveConfig, maskToken, UPLOAD_DIR } from './config.mjs'
@@ -452,6 +452,20 @@ export function createApp({ store }) {
     '/api/nodes/:id/tracks',
     wrap(async (req, res) => res.json(await getNodeTracks(store, refOf(req), { scope: req.query.scope, branches: req.query.branches === 'true', light: req.query.light === 'true' })))
   )
+
+  // ---------- 代码推送门禁（登记提交是否真的到了远程） ----------
+
+  app.get(
+    '/api/nodes/:id/push-gate',
+    wrap(async (req, res) => {
+      const gate = await getNodePushGate(store, refOf(req), { scope: req.query.scope })
+      if (store.normalizeFormat(req.query.format) === 'md') {
+        res.type('text/markdown').send(renderPushGateMd(gate))
+        return
+      }
+      res.json(gate)
+    })
+  )
   // ---------- 审批合并（同意 → 开发分支合入所属子需求的「需求分支」；主仓库执行） ----------
   app.post(
     '/api/nodes/:id/merge',
@@ -769,11 +783,9 @@ export function createApp({ store }) {
   // ---------- 交付门禁（需求就绪 / 验收 / 上线三段的最终汇总） ----------
   app.get(
     '/api/nodes/:id/delivery-gate',
-    wrap((req, res) => {
+    wrap(async (req, res) => {
       const node = store.resolveRef(refOf(req))
-      const gate = store.buildDeliveryGate(node.id, {
-        scope: req.query.scope
-      })
+      const gate = await buildDeliveryGateFull(store, node.id, { scope: req.query.scope })
       if (store.normalizeFormat(req.query.format) === 'md') {
         res.type('text/markdown').send(renderDeliveryGateMd(gate))
         return

@@ -25,6 +25,7 @@ import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.CheckboxTree;
 import com.intellij.ui.CheckedTreeNode;
+import com.intellij.ui.JBColor;
 import com.intellij.ui.ScrollPaneFactory;
 import com.intellij.ui.components.JBCheckBox;
 import com.intellij.ui.components.JBLabel;
@@ -1615,9 +1616,10 @@ public class TaskBoardPanel extends JPanel {
     private static com.intellij.openapi.ui.Splitter lastTopSplitter;
     /** Review 工具条（开关点击后刷新勾选状态） */
     private ActionToolbar reviewToolbar;
-    /** Select 视图右侧详情面板 */
-    /** 详情区：JTextArea（纯文本）——JEditorPane 的 HTML 布局在 IDEA 容器里会 BoxView 死循环（jstack 实锤），故不用 HTML 渲染 */
-    private final javax.swing.JTextArea selectDetailPane = new javax.swing.JTextArea();
+    /** Select 视图右侧详情面板：Markdown → HTML，交给 JCEF 渲染（Swing 的 JEditorPane HTML 布局会 BoxView 死循环） */
+    private com.intellij.ui.jcef.JBCefBrowser selectDetailBrowser;
+    /** 详情区降级面（JCEF 不可用时用纯文本，去 # 与代码围栏） */
+    private javax.swing.JTextArea selectDetailFallback;
     /** 当前详情节点的飞书 PRD 链接（「PRD」按钮用） */
     private String selectDetailPrdUrl;
     /** 详情已加载的节点 id（避免重复拉取） */
@@ -1725,21 +1727,67 @@ public class TaskBoardPanel extends JPanel {
         });
         // 单击选中 → 右侧详情（需求/设计/文档/PRD）
         selectTree.getSelectionModel().addTreeSelectionListener(e -> loadSelectDetail());
-        // 布局：左树右详情（纯文本 JTextArea，规避 JEditorPane HTML 布局死循环）
-        selectDetailPane.setEditable(false);
-        selectDetailPane.setLineWrap(true);
-        selectDetailPane.setWrapStyleWord(true);
-        selectDetailPane.setFont(new java.awt.Font("Menlo", java.awt.Font.PLAIN, 12));
-        selectDetailPane.setMargin(new java.awt.Insets(10, 10, 10, 10));
-        selectDetailPane.setText("单击节点查看详情（需求 / 设计 / 文档 / PRD）\n" +
-                "双击进入 Review\n\n（PRD 链接用顶栏「PRD」按钮打开）");
+        // 布局：左树右详情。详情用 JCEF 渲染 Markdown（JEditorPane 的 HTML 布局在 IDEA 容器里会 BoxView 死循环）
+        selectDetailFallback = new javax.swing.JTextArea();
+        selectDetailFallback.setEditable(false);
+        selectDetailFallback.setLineWrap(true);
+        selectDetailFallback.setWrapStyleWord(true);
+        selectDetailFallback.setFont(new java.awt.Font("Menlo", java.awt.Font.PLAIN, 12));
+        selectDetailFallback.setMargin(new java.awt.Insets(10, 10, 10, 10));
+        selectDetailFallback.setText(HINT_TEXT);
+        JComponent detailComponent = buildSelectDetailComponent();
         JSplitPane selectSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
                 ScrollPaneFactory.createScrollPane(selectTree, true),
-                ScrollPaneFactory.createScrollPane(selectDetailPane, true));
+                detailComponent);
         selectSplit.setDividerLocation(420);
         selectSplit.setResizeWeight(0.45);
         p.add(selectSplit, BorderLayout.CENTER);
         return p;
+    }
+
+    private static final String HINT_TEXT = "单击节点查看详情（需求 / 设计 / 文档 / PRD）\n" +
+            "双击进入 Review\n\n（PRD 链接用顶栏「PRD」按钮打开）";
+
+    /** 详情区组件：优先 JCEF（可渲染 Markdown 与超链接）；不可用时降级为纯文本 JTextArea */
+    private JComponent buildSelectDetailComponent() {
+        try {
+            if (com.intellij.ui.jcef.JBCefApp.isSupported()) {
+                selectDetailBrowser = new com.intellij.ui.jcef.JBCefBrowser();
+                selectDetailBrowser.setOpenLinksInExternalBrowser(true);
+                // 面板随工具窗长期存活，浏览器交给项目 Disposer 统一释放
+                com.intellij.openapi.util.Disposer.register(project, selectDetailBrowser);
+                selectDetailBrowser.loadHTML(renderSelectDetailPage(HINT_TEXT, false));
+                return selectDetailBrowser.getComponent();
+            }
+        } catch (Throwable t) {
+            diag("详情面板 JCEF 初始化失败，降级纯文本：" + t);
+            selectDetailBrowser = null;
+        }
+        return ScrollPaneFactory.createScrollPane(selectDetailFallback, true);
+    }
+
+    /** 详情页：把「节点头 + 各文档」拼成一份 Markdown，再渲染成 JCEF 页面 */
+    private String renderSelectDetailPage(String markdown, boolean dark) {
+        try {
+            return MarkdownRenderer.toPage(markdown, dark);
+        } catch (Throwable t) {
+            diag("Markdown 渲染失败，降级纯文本：" + t);
+            // 最后一道兜底：不再调用渲染器，直接转义成 <pre>，保证自己不会二次抛异常
+            return "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body>"
+                    + "<pre style=\"white-space:pre-wrap;font-family:Menlo,monospace;font-size:12px;padding:12px\">"
+                    + MarkdownRenderer.escapeHtml(markdown)
+                    + "</pre></body></html>";
+        }
+    }
+
+    /** 把详情文字写进当前有效组件（JCEF 优先，纯文本降级） */
+    private void setSelectDetailText(String markdownText) {
+        if (selectDetailBrowser != null) {
+            selectDetailBrowser.loadHTML(renderSelectDetailPage(markdownText, !JBColor.isBright()));
+            return;
+        }
+        selectDetailFallback.setText(mdToText(markdownText));
+        selectDetailFallback.setCaretPosition(0);
     }
 
     /** markdown → 纯文本（去 # 标记与代码围栏，保留正文；供 JTextArea 详情面板） */
@@ -1761,88 +1809,6 @@ public class TaskBoardPanel extends JPanel {
         return sb.toString();
     }
 
-    /** 轻量 markdown → HTML（标题/列表/代码块/行内代码/链接/粗体；供详情面板渲染） */
-    private static String mdToHtml(String md) {
-        StringBuilder sb = new StringBuilder();
-        boolean inCode = false;
-        boolean inUl = false;
-        boolean inOl = false;
-        String[] lines = md.replace("\r\n", "\n").split("\n", -1);
-        for (String line : lines) {
-            String t = line.trim();
-            if (t.startsWith("```")) {
-                if (inCode) {
-                    sb.append("</pre>");
-                    inCode = false;
-                } else {
-                    sb.append("<pre style='background:#f6f8fa;padding:8px;border-radius:4px;font-size:11px;white-space:pre-wrap'>");
-                    inCode = true;
-                }
-                continue;
-            }
-            if (inCode) {
-                sb.append(esc(line)).append("\n");
-                continue;
-            }
-            boolean isUl = t.startsWith("- ") || t.startsWith("* ");
-            boolean isOl = t.matches("^\\d+\\.\\s+.*");
-            if (!isUl && inUl) {
-                sb.append("</ul>");
-                inUl = false;
-            }
-            if (!isOl && inOl) {
-                sb.append("</ol>");
-                inOl = false;
-            }
-            if (t.isEmpty()) {
-                sb.append("<div style='height:6px'></div>");
-                continue;
-            }
-            if (t.startsWith("#### ")) {
-                sb.append("<b>").append(inlineMd(t.substring(5))).append("</b>");
-            } else if (t.startsWith("### ")) {
-                sb.append("<h4 style='margin:10px 0 4px 0'>").append(inlineMd(t.substring(4))).append("</h4>");
-            } else if (t.startsWith("## ")) {
-                sb.append("<h3 style='margin:12px 0 4px 0'>").append(inlineMd(t.substring(3))).append("</h3>");
-            } else if (t.startsWith("# ")) {
-                sb.append("<h2 style='margin:14px 0 6px 0'>").append(inlineMd(t.substring(2))).append("</h2>");
-            } else if (isUl) {
-                if (!inUl) {
-                    sb.append("<ul style='margin:4px 0'>");
-                    inUl = true;
-                }
-                sb.append("<li>").append(inlineMd(t.substring(2))).append("</li>");
-            } else if (isOl) {
-                if (!inOl) {
-                    sb.append("<ol style='margin:4px 0'>");
-                    inOl = true;
-                }
-                sb.append("<li>").append(inlineMd(t.replaceFirst("^\\d+\\.\\s+", ""))).append("</li>");
-            } else {
-                sb.append("<p style='margin:4px 0'>").append(inlineMd(t)).append("</p>");
-            }
-        }
-        if (inCode) {
-            sb.append("</pre>");
-        }
-        if (inUl) {
-            sb.append("</ul>");
-        }
-        if (inOl) {
-            sb.append("</ol>");
-        }
-        return sb.toString();
-    }
-
-    /** 行内 markdown（链接 / 粗体 / 行内代码） */
-    private static String inlineMd(String s) {
-        String h = esc(s);
-        h = h.replaceAll("\\[([^\\]]+)\\]\\(([^)]+)\\)", "<a href='$2'>$1</a>");
-        h = h.replaceAll("\\*\\*([^*]+)\\*\\*", "<b>$1</b>");
-        h = h.replaceAll("`([^`]+)`", "<code style='background:#f0f0f0;padding:0 2px'>$1</code>");
-        return h;
-    }
-
     /** 单击节点 → 加载详情（需求 / 设计 / 文档 / PRD）到右侧面板 */
     private void loadSelectDetail() {
         NodeData d = selectedSelectNode();
@@ -1852,7 +1818,7 @@ public class TaskBoardPanel extends JPanel {
         diag("loadSelectDetail 开始 id=" + d.id + " name=" + d.name);
         selectDetailLoadedId = d.id;
         selectDetailLoadedName = d.name;
-        selectDetailPane.setText("加载中…（" + d.name + "）");
+        setSelectDetailText("加载中…（" + d.name + "）");
         final long id = d.id;
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             try {
@@ -1873,31 +1839,31 @@ public class TaskBoardPanel extends JPanel {
                         return;
                     }
                     StringBuilder t = new StringBuilder();
-                    t.append(d.name).append("\n");
-                    t.append("id=").append(d.id).append(" · ").append(d.type).append("\n");
+                    t.append("## ").append(d.name).append("\n\n");
+                    t.append("`id=").append(d.id).append("` · `").append(d.type).append("`\n");
                     if (finalPrdUrl != null) {
                         selectDetailPrdUrl = finalPrdUrl;
-                        t.append("\n📄 飞书 PRD：").append(finalPrdUrl).append("\n");
+                        t.append("\n📄 飞书 PRD：<").append(finalPrdUrl).append(">\n");
                     } else {
                         selectDetailPrdUrl = null;
                     }
-                    t.append("\n双击节点进入 Review（diff / 审查 / 对照布局）\n");
+                    t.append("\n---\n");
                     if (finalDocs != null && finalDocs.size() > 0) {
                         for (JsonElement el : finalDocs) {
                             JsonObject doc = el.getAsJsonObject();
-                            t.append("\n════════ ").append(str(doc, "name", "文档")).append(" ════════\n\n");
-                            t.append(mdToText(str(doc, "content", "")));
+                            t.append("\n### ").append(str(doc, "name", "文档")).append("\n\n");
+                            t.append(str(doc, "content", ""));
+                            t.append("\n");
                         }
                     } else {
                         t.append("\n（该节点暂无文档）\n");
                     }
                     long t1 = System.currentTimeMillis();
-                    selectDetailPane.setText(t.toString());
-                    selectDetailPane.setCaretPosition(0); // JTextArea 纯文本：安全
+                    setSelectDetailText(t.toString());
                     diag("loadSelectDetail 已 setText id=" + id + " 渲染 " + (System.currentTimeMillis() - t1) + "ms len=" + t.length());
                 });
             } catch (Exception ex) {
-                SwingUtilities.invokeLater(() -> selectDetailPane.setText(
+                SwingUtilities.invokeLater(() -> setSelectDetailText(
                         "加载详情失败：" + ex.getMessage()));
             }
         });

@@ -2,7 +2,7 @@ import { CODES, AppError } from './errors.mjs'
 import { CHILD_TYPES } from './db.mjs'
 import path from 'node:path'
 import { startAgentRun } from './agent.mjs'
-import { resolveRepoDir, commitDiff as gitCommitDiff, commitStat as gitCommitStat, commitTrack as gitCommitTrack, commitTime as gitCommitTime, commitMeta as gitCommitMeta, showFileAt as gitShowFileAt, commitParents as gitCommitParents, patchId as gitPatchId, mergedInCommits as gitMergedInCommits, branchesContaining as gitBranchesContaining, branchContains as gitBranchContains, mergeBranch as gitMergeBranch, previewMerge as gitPreviewMerge, branchLogShas as gitBranchLogShas, commitMetasBatch as gitCommitMetasBatch } from './git.mjs'
+import { resolveRepoDir, commitDiff as gitCommitDiff, commitStat as gitCommitStat, commitTrack as gitCommitTrack, commitPushState as gitCommitPushState, commitTime as gitCommitTime, commitMeta as gitCommitMeta, showFileAt as gitShowFileAt, commitParents as gitCommitParents, patchId as gitPatchId, mergedInCommits as gitMergedInCommits, branchesContaining as gitBranchesContaining, branchContains as gitBranchContains, mergeBranch as gitMergeBranch, previewMerge as gitPreviewMerge, branchLogShas as gitBranchLogShas, commitMetasBatch as gitCommitMetasBatch } from './git.mjs'
 import { addWorktree as gitAddWorktree, removeWorktree as gitRemoveWorktree, deleteLocalBranch as gitDeleteLocalBranch, checkWorktreePlan as gitCheckWorktreePlan } from './git.mjs'
 import { loadConfig } from './config.mjs'
 import { commitAddedLines as gitCommitAddedLines } from './git.mjs'
@@ -37,6 +37,7 @@ export const TOOLS = [
   'commit_list',
   'commit_diff',
   'commit_track',
+  'commit_push_gate',
   'node_diffs',
   'node_tracks',
   'commit_add',
@@ -553,6 +554,136 @@ export async function getNodeTracks(store, nodeRef, { scope = 'self', branches =
   }
 
   return { scope, count: items.length, items }
+}
+
+const PUSH_STATUS_LABELS = {
+  pushed: '已推送',
+  not_pushed: '未推送',
+  unknown: '无法判定'
+}
+
+const PUSH_REASON_LABELS = {
+  'no-remote-ref-contains': '没有任何远程跟踪分支包含该提交（先 git push）',
+  'sha-not-found': '本机解析不出该提交（sha 可能写错，或该提交不在这份工作区）',
+  'no-remote': '仓库没有配置远程（先 git remote add）',
+  'repo-not-registered': '提交标注的仓库未在 TaskBoard 登记',
+  'repo-path-unset': '仓库已登记但没有填本地路径（先 repo update 补 local_path）',
+  'repo-path-missing': '仓库已登记但本地路径不存在或不是 git 仓库',
+  'git-unavailable': '本机 git 不可用（命令不存在）',
+  'git-error': '本机 git 执行失败'
+}
+
+/**
+ * 把 push-gate 捕获到的异常映射成稳定且可行动的 `reason`。
+ *
+ * D1/D2 收口：原先 catch 把「除未登记仓库外的一切」都标成 `repo-path-missing`，
+ * 于是 `GIT_UNAVAILABLE`（本机没装 git）也提示去查路径，指向了错误的修复动作。
+ * `REPO_PATH_MISSING` 本身还包含两个子情形（压根没填路径 / 填了但路径无效），
+ * 只有拿到 repo 才能区分——所以本函数需要 repo 入参。
+ */
+function pushReasonFromError(e, repo) {
+  if (e.code === CODES.REPO_NOT_REGISTERED) return 'repo-not-registered'
+  if (e.code === CODES.REPO_PATH_MISSING) {
+    // 与 resolveRepoDir 同一判据：`!repo.localPath` 才是「没填」，否则是「填了但无效」
+    return repo && repo.localPath ? 'repo-path-missing' : 'repo-path-unset'
+  }
+  if (e.code === CODES.GIT_UNAVAILABLE) return 'git-unavailable'
+  return 'git-error'
+}
+
+/**
+ * 代码推送门禁：节点（含子树）下已登记提交是否真的到了远程。
+ *
+ * 只读本地 ref（不 fetch、不 push、不写库）：推送状态是从本机 git 推导的结论，
+ * 与 acceptance_report / readiness / delivery_gate 同一条「纯读、不落表」原则。
+ * 按 (repo, sha) 去重并回填来源节点，与 node_tracks / getNodeDiffs 口径一致。
+ *
+ * 顶层 ready：全部 pushed → true；有任一 not_pushed / unknown → false；
+ * 没有任何已登记提交 → null（不知道 ≠ 没通过）。
+ */
+export async function getNodePushGate(store, nodeRef, { scope = 'self' } = {}) {
+  const node = store.resolveRef(nodeRef)
+  const effectiveScope = store.normalizeScope(scope)
+  const commits = store.listCommits(node.id, { subtree: effectiveScope === 'subtree' })
+  const repos = new Map(store.listRepos().map((r) => [r.name, r]))
+  const items = []
+  const byKey = new Map()
+
+  for (const c of commits) {
+    const key = `${c.repo || ''}@${c.sha}`
+    const sourcePath = store.getNode(c.nodeId).path
+    const existing = byKey.get(key)
+    if (existing) {
+      existing.sourceNodes.push({ nodeId: c.nodeId, path: sourcePath })
+      continue
+    }
+    const item = {
+      commit: c,
+      sourceNodes: [{ nodeId: c.nodeId, path: sourcePath }],
+      repo: null,
+      status: 'unknown',
+      reason: null,
+      detail: null,
+      refs: [],
+      error: null
+    }
+    byKey.set(key, item)
+    items.push(item)
+    // repo 在 try 外解析：catch 里需要用它的 localPath 区分「没填路径」与「路径无效」
+    const repo = c.repo ? repos.get(c.repo) : null
+    try {
+      if (!repo) {
+        throw new AppError(
+          CODES.REPO_NOT_REGISTERED,
+          c.repo ? `仓库 ${c.repo} 未登记（先 repo add）` : '该提交未标注仓库',
+          { repo: c.repo }
+        )
+      }
+      const dir = resolveRepoDir(repo)
+      item.repo = { name: repo.name, localPath: repo.localPath }
+      const state = await gitCommitPushState(dir, c.sha)
+      item.status = state.status
+      item.reason = state.reason
+      item.refs = state.refs
+    } catch (e) {
+      // 单条失败不拖垮整体：一律归入 unknown，但 reason 要稳定且指向真实修复动作（D1/D2）
+      item.status = 'unknown'
+      item.reason = pushReasonFromError(e, repo)
+      item.error = { code: e.code || 'ERROR', message: e.message }
+    }
+    // detail 用真实错误信息（error.message），没有异常对象时才回落到固定说明
+    item.detail =
+      (item.error && item.error.message) ||
+      PUSH_REASON_LABELS[item.reason] ||
+      (item.status === 'pushed' ? `远程包含：${item.refs.join('、')}` : '')
+  }
+
+  const totals = {
+    commits: items.length,
+    pushed: items.filter((i) => i.status === 'pushed').length,
+    notPushed: items.filter((i) => i.status === 'not_pushed').length,
+    unknown: items.filter((i) => i.status === 'unknown').length
+  }
+  const blockers = items
+    .filter((i) => i.status !== 'pushed')
+    .map((i) => ({
+      repo: i.commit.repo,
+      sha: i.commit.sha,
+      nodeId: i.commit.nodeId,
+      sourceNodes: i.sourceNodes.map((s) => s.path),
+      status: i.status,
+      reason: i.reason,
+      detail: i.detail
+    }))
+  const ready = items.length === 0 ? null : blockers.length === 0
+  return {
+    node: { id: node.id, name: node.name, type: node.type },
+    scope: effectiveScope,
+    ready,
+    totals,
+    items,
+    blockers
+  }
 }
 
 /** 批量补齐 patch-id（merge 提交标记为 __merge__；写入 DB 缓存与内存对象） */
@@ -1309,6 +1440,48 @@ export function renderMindmapMd(mindmap) {
 }
 
 /**
+ * 代码推送门禁导出：把「登记提交是否到了远程」渲染成可贴进 issue / 评审记录的 markdown。
+ * 与 renderReadinessMd / renderDeliveryGateMd 同风格。
+ */
+export function renderPushGateMd(gate) {
+  // 来源节点路径可能含 `|` 或换行（用户/导入内容），进入表格前必须转义。
+  const cell = (v) =>
+    String(v == null ? '' : v)
+      .replace(/\\/g, '\\\\')
+      .replace(/\|/g, '\\|')
+      .replace(/\r?\n/g, ' ')
+  const t = gate.totals
+  const lines = [
+    `# 代码推送门禁：${gate.node.name}`,
+    '',
+    `- 范围：${gate.scope === 'subtree' ? '含子树' : '仅本节点'}`,
+    `- 提交：${t.commits} · 已推送：${t.pushed} · 未推送：${t.notPushed} · 无法判定：${t.unknown}`,
+    `- 推送结论：${gate.ready == null ? '—（没有可判定的提交）' : gate.ready ? '登记提交均已推送' : '存在未推送或无法判定的提交'}`,
+    '',
+    '## 提交明细',
+    '',
+    '| 仓库 | 提交 | 状态 | 依据 |',
+    '|---|---|---|---|'
+  ]
+  for (const i of gate.items) {
+    const basis = i.status === 'pushed' ? i.refs.join('、') : i.detail || i.status
+    lines.push(
+      `| ${cell(i.commit.repo || '—')} | ${cell(i.commit.sha)} | ${cell(PUSH_STATUS_LABELS[i.status] || i.status)} | ${cell(basis)} |`
+    )
+  }
+  if (gate.blockers.length > 0) {
+    lines.push('', '## 阻塞项', '', '| 仓库 | 提交 | 状态 | 来源节点 | 说明 |', '|---|---|---|---|---|')
+    for (const b of gate.blockers) {
+      lines.push(
+        `| ${cell(b.repo || '—')} | ${cell(b.sha)} | ${cell(PUSH_STATUS_LABELS[b.status] || b.status)} | ${cell(b.sourceNodes.join('、'))} | ${cell(b.detail)} |`
+      )
+    }
+  }
+  return lines.join('\n')
+}
+
+
+/**
  * 文档敏感信息扫描导出：把只读扫描结果渲染成可贴进 issue / 评审记录的 markdown。
  *
  * 与其它 render*Md 一样只打印已脱敏的 `redacted` / `excerpt`，绝不回显命中的原文；
@@ -1343,7 +1516,7 @@ export function renderSecretScanMd(scan) {
 }
 
 /**
- * 交付门禁导出：把三段既有结论收敛成一张可贴进 issue / 上线单的最终判定。
+ * 交付门禁导出：把四段既有结论收敛成一张可贴进 issue / 上线单的最终判定。
  * 与 renderReadinessMd / renderAcceptanceMd / renderReleaseChecklistMd 同风格。
  */
 export function renderDeliveryGateMd(gate) {
@@ -1927,6 +2100,22 @@ export function renderWorkflowMapMd(map) {
     }
   }
   return lines.join('\n')
+}
+
+/**
+ * 交付门禁（含代码推送证据）：四段结论的完整汇总。
+ *
+ * `store.buildDeliveryGate` 是同步纯读聚合，但代码推送要读本机 git ref（异步）。
+ * 因此由本函数先算出 pushGate，再把它注入同步聚合——保证「能不能交付」这个唯一结论
+ * 覆盖「登记提交是否真的到了远程」，不再默认把未推送的代码当成可交付。
+ *
+ * 入口只有这一个 async 版本；三入口（HTTP / CLI / MCP）都调它，避免同步版被误用成放行路径。
+ */
+export async function buildDeliveryGateFull(store, nodeRef, { scope = 'self' } = {}) {
+  const node = store.resolveRef(nodeRef)
+  const effectiveScope = store.normalizeScope(scope)
+  const pushGate = await getNodePushGate(store, node.id, { scope: effectiveScope })
+  return store.buildDeliveryGate(node.id, { scope: effectiveScope, pushGate })
 }
 
 /**

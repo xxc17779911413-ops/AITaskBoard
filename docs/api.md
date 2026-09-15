@@ -728,9 +728,10 @@ curl -s 'http://127.0.0.1:3210/api/nodes/1/business-gate?format=md'
 > `blockers` 按 `open_defect` / `unpassed_case` 分型，便于调用方直接生成待办。
 
 ## 交付门禁（需求就绪 / 测试验收 / 上线治理的最终汇总）
+## 交付门禁（需求就绪 / 测试验收 / 上线治理 / 代码推送的最终汇总）
 
 ```bash
-# 单节点最终交付结论：来源为 readiness / acceptance / release 三段既有结论
+# 单节点最终交付结论：来源为 readiness / acceptance / release / push 四段既有结论
 curl -s http://127.0.0.1:3210/api/nodes/1/delivery-gate
 
 # 连子树一起判定（挂在项目 / 需求上）
@@ -830,6 +831,36 @@ curl -s 'http://127.0.0.1:3210/api/nodes/12/workflow-map?format=md'
 > `meta.checkCases[*].id` 与 `latestReportId`。Web「主线」面板使用这些引用显式调用
 > `PATCH /api/release-items/:rid`、`POST /api/nodes/:id/release-checks`、
 > `PATCH /api/test-reports/:rid`，写回后重新读取图。
+
+## 代码推送门禁（登记提交是否真的到了远程）
+
+```bash
+# 逐条判定节点下已登记提交是否已 push 到远程
+curl -s http://127.0.0.1:3210/api/nodes/1/push-gate
+
+# 连子树一起判定（挂在项目 / 需求上）
+curl -s 'http://127.0.0.1:3210/api/nodes/1/push-gate?scope=subtree'
+
+# markdown 可直接贴进 issue / 评审记录
+curl -s 'http://127.0.0.1:3210/api/nodes/1/push-gate?format=md'
+
+# CLI / MCP 等价入口
+# node bin/taskboard.js push gate "项目A/需求1" [--scope self|subtree] [--format json|md]
+# MCP: commit_push_gate { ref, scope?, format? }
+```
+
+> 单条提交三态：`pushed`（有远程跟踪分支包含它）/ `not_pushed`（本地有、远程没有）/
+> `unknown`（未登记仓库、无远程、或本机解析不出该 sha）。
+> `unknown` **同样阻塞**但不算通过——最危险的失败模式是把「没配仓库」当成「已推送」。
+> 只读本机已有 ref，**不自动 fetch**：若同事已 push 而本机没 fetch，会读成 `not_pushed`
+> （保守方向的误报，提示先 `git fetch`）。没有已登记提交时 `ready=null`。
+>
+> 阻塞项 `reason` 是稳定且可行动的枚举，每个值对应一个修复动作：
+> `no-remote-ref-contains`（先 `git push`）/ `repo-not-registered`（`repo add`）/
+> `repo-path-unset`（`repo update` 补 `local_path`）/ `repo-path-missing`（修正路径）/
+> `git-unavailable`（本机装 git）/ `no-remote`（`git remote add`）/
+> `sha-not-found`（核对 sha 或 `git fetch`）/ `git-error`（看 `detail` 的真实 stderr）。
+> `detail` 优先带真实错误信息，而不是笼统分类文案。
 
 ## 错误码速查
 

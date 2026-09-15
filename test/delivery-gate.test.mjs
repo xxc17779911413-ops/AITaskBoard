@@ -35,11 +35,12 @@ test('delivery_gate：没有任何证据时返回 unknown（不伪造成可交�
   assert.equal(gate.decision, 'unknown')
   assert.equal(gate.ready, null)
   assert.equal(gate.totals.applicable, 0)
-  assert.equal(gate.totals.notApplicable, 3)
+  assert.equal(gate.totals.notApplicable, 4)
   assert.deepEqual(gate.blockers, [])
   assert.equal(sourceOf(gate, 'readiness').status, 'not_applicable')
   assert.equal(sourceOf(gate, 'acceptance').status, 'not_applicable')
   assert.equal(sourceOf(gate, 'release').status, 'not_applicable')
+  assert.equal(sourceOf(gate, 'push').status, 'not_applicable')
 })
 
 test('delivery_gate：需求已就绪但测试尚未执行时不可交付', async (t) => {
@@ -96,7 +97,7 @@ test('delivery_gate：三段全部通过才可交付；不适用项不阻塞', a
   assert.equal(gate.decision, 'ready')
   assert.equal(gate.ready, true)
   assert.equal(gate.totals.passed, 2)
-  assert.equal(gate.totals.notApplicable, 1)
+  assert.equal(gate.totals.notApplicable, 2)
   assert.deepEqual(gate.blockers, [])
 })
 

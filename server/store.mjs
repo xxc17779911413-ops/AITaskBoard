@@ -2969,16 +2969,18 @@ export function createStore(db, options = {}) {
     }
   }
 
-  // ---------- 交付门禁（汇总需求就绪 / 验收 / 上线三段结论） ----------
+  // ---------- 交付门禁（汇总需求就绪 / 验收 / 上线 / 推送四段结论） ----------
   //
   // 前三个功能各自回答一段问题：需求就绪门禁=能不能进测试，验收报告=测试过没过，
-  // 上线清单=上线动作能不能执行。本聚合把它们收敛成调用方唯一需要消费的“能不能交付”结论。
+  // 上线清单=上线动作能不能执行；代码推送门禁=登记的提交有没有真的到远程。
+  // 本聚合把它们收敛成调用方唯一需要消费的“能不能交付”结论。
   // 纯读、不落表、不 bump revision：结论必须随源数据实时变化，避免产生第二份真相。
 
   const DELIVERY_SOURCE_LABELS = {
     readiness: '需求就绪',
     acceptance: '测试验收',
-    release: '上线治理'
+    release: '上线治理',
+    push: '代码推送'
   }
 
   function subtreeHasTypes(rootId, types) {
@@ -2988,7 +2990,15 @@ export function createStore(db, options = {}) {
     })
   }
 
-  function buildDeliveryGate(nodeId, { scope = 'self' } = {}) {
+  /**
+   * 交付门禁：汇总需求就绪 / 测试验收 / 上线治理 / 代码推送四段既有结论。
+   *
+   * 代码推送（push）是**异步**推导的（要读本机 git ref），因此 store 层不直接调 git：
+   * 调用方（ops.buildDeliveryGateFull）先算出 pushGate 证据再传进来。
+   * `pushGate` 缺省时不能默认放行——只要本范围已登记提交，就把 push 标成 fail，
+   * 避免「同步调用忘了带推送证据」被读成可交付的假绿灯。
+   */
+  function buildDeliveryGate(nodeId, { scope = 'self', pushGate = null } = {}) {
     const root = rawNode(nodeId)
     const effectiveScope = normalizeScope(scope)
     const sources = []
@@ -3069,6 +3079,47 @@ export function createStore(db, options = {}) {
       evidence: release
     })
 
+    // 4. 代码推送：登记的提交是否真的到了远程。证据由调用方（ops.buildDeliveryGateFull）注入。
+    //    未注入证据时：范围内没有已登记提交 → 空态 not_applicable；有提交 → fail（不冒充通过）。
+    if (pushGate) {
+      const pt = pushGate.totals
+      sources.push({
+        key: 'push',
+        label: DELIVERY_SOURCE_LABELS.push,
+        status: pushGate.ready == null ? 'not_applicable' : pushGate.ready ? 'pass' : 'fail',
+        applicable: pushGate.ready != null,
+        detail:
+          pushGate.ready == null
+            ? '当前范围没有已登记的提交'
+            : pushGate.ready
+              ? `${pt.commits} 条提交均已推送`
+              : `${pt.notPushed + pt.unknown}/${pt.commits} 条提交未推送或无法判定`,
+        evidence: pushGate
+      })
+    } else {
+      const commitCount = listCommits(root.id, { subtree: effectiveScope === 'subtree' }).length
+      if (commitCount > 0) {
+        // 同步调用无法判定推送状态，但「有提交却没证据」绝不能算通过。
+        sources.push({
+          key: 'push',
+          label: DELIVERY_SOURCE_LABELS.push,
+          status: 'fail',
+          applicable: true,
+          detail: `${commitCount} 条已登记提交的推送状态未判定（请走 delivery gate 入口）`,
+          evidence: null
+        })
+      } else {
+        sources.push({
+          key: 'push',
+          label: DELIVERY_SOURCE_LABELS.push,
+          status: 'not_applicable',
+          applicable: false,
+          detail: '当前范围没有已登记的提交',
+          evidence: null
+        })
+      }
+    }
+
     const blockers = []
     for (const source of sources) {
       if (source.status !== 'fail') continue
@@ -3113,6 +3164,17 @@ export function createStore(db, options = {}) {
             detail: `检查用例（${c.kind}）最近结论：${c.latestStatus}`
           })
         }
+      } else if (source.key === 'push' && source.evidence) {
+        for (const b of source.evidence.blockers) {
+          blockers.push({
+            source: source.key,
+            label: source.label,
+            name: `${b.repo || '—'}@${String(b.sha).slice(0, 8)}`,
+            detail: b.detail || `提交状态：${b.status}`
+          })
+        }
+      } else if (source.key === 'push' && !source.evidence) {
+        blockers.push({ source: source.key, label: source.label, name: '推送状态未判定', detail: source.detail })
       }
     }
 

@@ -151,6 +151,23 @@
 - **教训**：**Swing JEditorPane 的 HTML 渲染（尤其 text/html + 复杂样式/中文）在 IDEA 嵌套容器里不可靠**，
   只读展示场景优先 JTextArea/Browser（JCEF）；排查 EDT 卡死第一步永远是 **jstack 看 AWT-EventQueue 栈**
 
+### 收口：详情面板改用 JCEF 渲染 Markdown（纯文本方案的回退）
+
+- **现象**（用户反馈截图）：右侧详情把文档**原样当纯文本**贴出来 —— `## 标题`、`- [立项资料库](https://…)`、
+  `---`、`**粗体**` 全部裸露，链接不可点。
+- **根因**：上游为绕开 JEditorPane 的 BoxView 死循环，把渲染降级成 `mdToText`
+  （只做「去 `#` + 去代码围栏」），**Markdown 语义整体丢失**；同一文件里另有一份 `mdToHtml`
+  但从未被调用（死代码），修 bug 时容易误改错路径。
+- **修复**：新增 `MarkdownRenderer`（IDEA 自带 `org.intellij.markdown`，GFM 方言），详情面板改用 **JCEF**
+  呈现（正是下面「教训」里推荐的 Browser 路线），不再碰 Swing 的 HTML 布局；
+  JCEF 不可用时仍降级为 `JTextArea` 纯文本。旧死代码 `mdToHtml` / `inlineMd` 一并删除。
+- **转义**（安全）：默认 providers 会把文档里的原始 HTML 原样透传进渲染页
+  （实测 `<script>`、`<img onerror=…>` 均可执行）。`MarkdownRenderer` 把 `HTML_BLOCK` / `HTML_TAG`
+  换成转义 provider，文档中的原始 HTML 只以**文本**呈现；链接仍可点，且经
+  `setOpenLinksInExternalBrowser(true)` 走外部浏览器，不在面板内导航。
+- **验收**：真实节点 id=100 的「需求内容 / 设计方案」渲染出标题层级、可点链接、列表、引用、行内代码、
+  分隔线；`npm test` 243 用例全绿；`idea-plugin/build.sh` 编译通过。
+
 ## Review 布局微调
 
 - **commit 列表操作移入列表头**：左列 commit 列表上方一行 —— 「全选⇄」「反选」「仅看待审」

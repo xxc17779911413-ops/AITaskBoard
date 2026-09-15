@@ -965,6 +965,28 @@ test('D1回归：子树无需求时 readiness 返回 ready=null 空态（HTTP 20
 
 // ---------- 交付门禁（需求就绪 + 测试验收 + 上线治理的最终汇总） ----------
 
+test('交付门禁：登记提交未推送时阻塞交付（push 来源 fail）', async () => {
+  const { tmp, store, post, get, patch, close } = await setup()
+  const p = await post('/api/nodes', { type: 'project', name: 'P' })
+  const r = await post('/api/nodes', { parentId: p.id, type: 'requirement', name: 'R' })
+
+  await post(`/api/nodes/${r.id}/documents/upsert`, { name: '需求内容', content: '需求正文' })
+  await post(`/api/nodes/${r.id}/documents/upsert`, { name: '概要设计', content: '设计正文' })
+  const testCase = await post(`/api/nodes/${r.id}/test-cases/upsert`, { name: '回归用例', prompt: '跑单测' })
+  const report = store.createTestReport(r.id, { caseId: testCase.id })
+  await patch(`/api/test-reports/${report.id}`, { status: 'pass', summary: '全绿' })
+
+  // 需求就绪 + 测试通过，但有一条登记提交没登记仓库（推送状态 unknown）→ 不可交付
+  await post(`/api/nodes/${r.id}/commits`, { sha: 'a'.repeat(40) })
+  const gate = await get(`/api/nodes/${r.id}/delivery-gate`)
+  assert.equal(gate.decision, 'not_ready')
+  assert.equal(gate.sources.find((s) => s.key === 'push').status, 'fail')
+  assert.equal(gate.sources.find((s) => s.key === 'push').evidence.totals.unknown, 1)
+  assert.ok(gate.blockers.some((b) => b.source === 'push'))
+  await close()
+  tmp.cleanup()
+})
+
 test('交付门禁：全链路（需求就绪 → 测试未跑不可交付 → 通过后可交付）', async () => {
   const { tmp, store, post, get, patch, base, close } = await setup()
   const p = await post('/api/nodes', { type: 'project', name: 'P' })
@@ -1011,7 +1033,7 @@ test('交付门禁：没有任何证据时 unknown，不伪造成可交付', asy
   const gate = await get(`/api/nodes/${p.id}/delivery-gate`)
   assert.equal(gate.decision, 'unknown')
   assert.equal(gate.ready, null)
-  assert.equal(gate.totals.notApplicable, 3)
+  assert.equal(gate.totals.notApplicable, 4)
   await close()
   tmp.cleanup()
 })

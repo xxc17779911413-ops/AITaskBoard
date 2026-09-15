@@ -1,0 +1,26 @@
+import { tempHome } from './test/helpers.mjs'
+import * as ops from './server/ops.mjs'
+import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'
+import { execFileSync } from 'node:child_process'
+const tmp=await tempHome(); const store=tmp.store.createStore(tmp.openDb())
+const root=fs.mkdtempSync(path.join(os.tmpdir(),'repo-'))
+const dir=path.join(root,'r'); fs.mkdirSync(dir)
+const g=(a)=>execFileSync('git',a,{cwd:dir,stdio:'pipe'}).toString()
+g(['init','-q']); g(['config','user.email','a@b.c']); g(['config','user.name','a'])
+fs.writeFileSync(path.join(dir,'f.txt'),'1'); g(['add','.']); g(['commit','-qm','c1'])
+const featureSha=g(['rev-parse','HEAD']).trim()
+const p=store.createNode({type:'project',name:'P'})
+const r=store.createNode({parentId:p.id,type:'requirement',name:'R'})
+store.upsertDocument(r.id,'需求内容','x'); store.upsertDocument(r.id,'概要设计','y')
+const tc=store.upsertTestCase(r.id,{name:'回归用例',prompt:'p'})
+const rep=store.createTestReport(r.id,{caseId:tc.id,status:'running',kind:'regression'}); store.finishTestReport(rep.id,{status:'pass'})
+store.addRepo({name:'repo',localPath:dir}); store.addCommit(r.id,{repo:'repo',sha:featureSha})
+let gate=await ops.buildDeliveryGateFull(store,r.id)
+console.log('1 decision=',gate.decision, gate.sources.map(s=>`${s.key}=${s.status}`).join(' '))
+store.upsertAcceptanceSignoff(r.id,{decision:'accepted',comment:'ok'})
+gate=await ops.buildDeliveryGateFull(store,r.id)
+console.log('2 (after signoff) decision=',gate.decision, gate.sources.map(s=>`${s.key}=${s.status}`).join(' '))
+g(['remote','add','origin',dir])
+g(['push','-q','-u','origin','HEAD:refs/heads/feature'])
+gate=await ops.buildDeliveryGateFull(store,r.id)
+console.log('3 (after push) decision=',gate.decision, gate.sources.map(s=>`${s.key}=${s.status}`).join(' '))

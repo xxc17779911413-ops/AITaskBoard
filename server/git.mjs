@@ -725,3 +725,41 @@ export async function commitAddedLines(dir, sha) {
   }
   return entries
 }
+
+/**
+ * 判定单个 commit 是否已到达远程（只读本地 ref，不 fetch、不 push）。
+ *
+ * 三态：
+ * - `pushed`     本机存在包含该提交的 remote-tracking ref（refs/remotes/*）
+ * - `not_pushed` 本地能解析出该提交、有远程，但没有任何 remote-tracking ref 包含它
+ * - `unknown`    无法判定：sha 本地不存在 / 无远程 / git 执行失败
+ *
+ * 注意判定顺序：`git for-each-ref --contains=<坏 sha>` 会以 exit 129 报错（实测），
+ * 所以必须先用 `rev-parse` 确认本地存在该 commit，否则「登记了本机没有的 sha」
+ * 会被误报成 git-error，丢掉 `sha-not-found` 这个关键区分。
+ */
+export async function commitPushState(dir, sha) {
+  const s = String(sha || '').trim()
+  if (!s) return { status: 'unknown', reason: 'sha-not-found', refs: [] }
+
+  // 1) 本地能否解析出这个 commit（短 sha 也接受；解析不出即为登记错误）
+  const exists = await gitTry(dir, ['rev-parse', '--verify', '--quiet', `${s}^{commit}`])
+  if (!exists.ok || !exists.stdout.trim()) {
+    return { status: 'unknown', reason: 'sha-not-found', refs: [] }
+  }
+
+  // 2) 是否有远程（没地方推 ≠ 忘了推，修复方式不同）
+  const remotes = await gitTry(dir, ['remote'])
+  if (!remotes.ok) return { status: 'unknown', reason: 'git-error', refs: [] }
+  if (!remotes.stdout.trim()) return { status: 'unknown', reason: 'no-remote', refs: [] }
+
+  // 3) 哪些 remote-tracking ref 包含它；无匹配时 exit 0 且空输出
+  const refsResult = await gitTry(dir, ['for-each-ref', `--contains=${s}`, 'refs/remotes/', '--format=%(refname:short)'])
+  if (!refsResult.ok) return { status: 'unknown', reason: 'git-error', refs: [] }
+  const refs = refsResult.stdout
+    .split('\n')
+    .map((r) => r.trim())
+    .filter(Boolean)
+  if (refs.length > 0) return { status: 'pushed', reason: null, refs }
+  return { status: 'not_pushed', reason: 'no-remote-ref-contains', refs: [] }
+}

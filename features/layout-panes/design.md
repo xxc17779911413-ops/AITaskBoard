@@ -23,6 +23,15 @@
 - 拷贝节点ID：`<id> · <name>`（供在 Qoder/聊天里指代任务）
 - 搜索：输入关键词 → 递归匹配 `NodeData.name` → `setSelectionPath` + `scrollPathToVisible`
 
+## 右侧详情面板（Markdown 渲染）
+
+- 单击节点 → 右栏渲染「节点头 + 各文档」，**Markdown 由 JCEF 承载**（`MarkdownRenderer`，
+  IDEA 自带 `org.intellij.markdown` GFM 方言：标题 / 列表 / 表格 / 引用 / 行内代码 / 链接 / 分隔线）
+- 链接走 `setOpenLinksInExternalBrowser(true)`，点击不在工具窗内导航
+- 文档里的原始 HTML（`<script>` / `<img onerror=…>`）经转义 provider 只作文本显示，不进渲染页
+- JCEF 不可用（模块被禁用）时降级为 `JTextArea` 纯文本，保证面板始终可用
+- 不用 Swing `JEditorPane` 渲染 HTML：在 IDEA 嵌套容器里会 BoxView 布局死循环（详见 `features/merge-flow/design.md`）
+
 ## 踩坑记录（三连击，全部日志实锤）
 
 ### ① PRD tab「关不干净」——三个版本才到底

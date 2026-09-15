@@ -52,7 +52,8 @@ test('MCP delivery_gate：真实调用返回 JSON，与 store 结果逐字段一
   const out = await call('delivery_gate', { node: r.id })
   assert.equal(out.isError, undefined)
   const viaMcp = JSON.parse(out.content[0].text)
-  const viaStore = store.buildDeliveryGate(r.id)
+  const { buildDeliveryGateFull } = await import('../server/ops.mjs')
+  const viaStore = await buildDeliveryGateFull(store, r.id)
   assert.deepEqual(viaMcp, viaStore)
   assert.equal(viaMcp.decision, 'not_ready')
   assert.equal(viaMcp.sources.find((s) => s.key === 'acceptance').evidence.totals.running, 1)
@@ -69,7 +70,8 @@ test('MCP delivery_gate：scope=subtree 与 store 结果逐字段一致', async 
 
   const out = await call('delivery_gate', { node: p.id, scope: 'subtree' })
   const viaMcp = JSON.parse(out.content[0].text)
-  assert.deepEqual(viaMcp, store.buildDeliveryGate(p.id, { scope: 'subtree' }))
+  const { buildDeliveryGateFull } = await import('../server/ops.mjs')
+  assert.deepEqual(viaMcp, await buildDeliveryGateFull(store, p.id, { scope: 'subtree' }))
   assert.equal(viaMcp.scope, 'subtree')
 })
 
@@ -80,9 +82,9 @@ test('MCP delivery_gate：format=md 与 renderDeliveryGateMd 一致', async (t) 
     tmp.cleanup()
   })
   const { r } = seedGate(store)
-  const { renderDeliveryGateMd } = await import('../server/ops.mjs')
+  const { renderDeliveryGateMd, buildDeliveryGateFull } = await import('../server/ops.mjs')
   const out = await call('delivery_gate', { node: r.id, format: 'md' })
-  assert.equal(out.content[0].text, renderDeliveryGateMd(store.buildDeliveryGate(r.id)))
+  assert.equal(out.content[0].text, renderDeliveryGateMd(await buildDeliveryGateFull(store, r.id)))
 })
 
 test('MCP delivery_gate：非法 scope/format 返回 VALIDATION_FAILED（不再泄漏 -32602 协议错误）', async (t) => {
@@ -132,7 +134,8 @@ test('四入口一致性：store / HTTP / CLI / MCP 的 delivery_gate 返回逐�
 
   const { r, testCase } = seedGate(store)
   store.createTestReport(r.id, { caseId: testCase.id, status: 'running', kind: 'regression' })
-  const expected = store.buildDeliveryGate(r.id)
+  const { buildDeliveryGateFull } = await import('../server/ops.mjs')
+  const expected = await buildDeliveryGateFull(store, r.id)
 
   const httpOut = await fetch(`${base}/api/nodes/${r.id}/delivery-gate`).then((x) => x.json())
   const mcpOut = JSON.parse((await client.callTool({ name: 'delivery_gate', arguments: { node: r.id } })).content[0].text)
