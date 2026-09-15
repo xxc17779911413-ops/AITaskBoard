@@ -1,0 +1,21 @@
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+const { createStore } = await import('./server/store.mjs')
+const dir = mkdtempSync(join(tmpdir(),'dbg-'))
+const store = createStore({ dataDir: dir })
+const r = store.createNode({ name: '需求', type: 'requirement' })
+store.upsertDocument(r.id, '需求内容', '需求正文')
+store.upsertDocument(r.id, '概要设计', '设计正文')
+const tc = store.upsertTestCase(r.id, { name: '回归用例', prompt: '跑单测' })
+const rep = store.createTestReport(r.id, { caseId: tc.id, status: 'running', kind: 'regression' })
+store.finishTestReport(rep.id, { status: 'pass', summary: '全绿' })
+store.upsertAcceptanceSignoff(r.id, { decision: 'accepted', comment: '验收通过' })
+store.createReleaseItem(r.id, { name: '执行上线 SQL', kind: 'sql', status: 'done' })
+const lint = store.createTestCase(r.id, { name: '静态检查', prompt: '跑 lint', kind: 'code_check' })
+const g1 = store.buildDeliveryGate(r.id)
+console.log('BEFORE:', g1.decision, g1.sources.map(s=>`${s.key}:${s.status}`).join(' '))
+const r2 = store.createTestReport(r.id, { caseId: lint.id, kind: 'code_check', status: 'running' })
+store.finishTestReport(r2.id, { status: 'pass', summary: '无告警' })
+const g2 = store.buildDeliveryGate(r.id)
+console.log('AFTER :', g2.decision, g2.sources.map(s=>`${s.key}:${s.status}`).join(' '))

@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { openDb } from './db.mjs'
 import { createStore } from './store.mjs'
 import { loadConfig, saveConfig, maskToken } from './config.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline, renderTestReportMd } from './ops.mjs'
 import { setupWorkspace, getWorkspacePrompt, cleanupWorkspace } from './ops.mjs'
 import { startAgentRun, retryAndDispatch } from './agent.mjs'
 import { resolveRepoDir, pickBranchForCommit } from './git.mjs'
@@ -860,9 +860,19 @@ export function createMcpServer({ store }) {
     }
   )
 
-  server.tool('test_report_get', '读取单条测试报告', { id: z.number() }, async ({ id }) => {
-    return { content: [{ type: 'text', text: JSON.stringify(store.getTestReport(id), null, 2) }] }
-  })
+  server.tool(
+    'test_report_get',
+    '读取单条测试报告；format=md 返回可贴进 issue / MR 的 markdown',
+    { id: z.number(), format: z.string().optional() },
+    mcpValidate(async ({ id, format }) => {
+      const report = store.getTestReport(id)
+      const text =
+        store.normalizeFormat(format) === 'md'
+          ? renderTestReportMd(store, report)
+          : JSON.stringify(report, null, 2)
+      return { content: [{ type: 'text', text }] }
+    })
+  )
 
   server.tool(
     'test_report_finish',

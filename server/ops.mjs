@@ -971,6 +971,48 @@ export function renderAcceptanceStatusMd(status) {
 }
 
 /**
+ * 单条测试报告导出：把一次执行的报告记录渲染成可贴进 issue / MR 的 markdown。
+ * 只读，复用既有 test_reports 行；用例被删后仍可按历史报告导出。
+ */
+export function renderTestReportMd(store, report) {
+  const node = store.getNode(report.nodeId)
+  const testCase = report.caseId ? store.getTestCase(report.caseId) : null
+  const run = report.runId ? store.getAgentRun(report.runId) : null
+  const statusLabels = {
+    running: '执行中',
+    pass: '通过',
+    fail: '失败',
+    blocked: '阻塞',
+    error: '错误',
+    cancelled: '取消'
+  }
+  const kindLabels = {
+    regression: '回归测试',
+    acceptance: '验收测试',
+    code_check: '代码检查',
+    biz_check: '业务检查',
+    release_check: '上线检查'
+  }
+  const lines = [
+    `# 测试报告 #${report.id}：${testCase ? testCase.name : '（用例已删除）'}`,
+    '',
+    `- 节点：${node.path}（${node.type}）`,
+    `- 类型：${kindLabels[report.kind] || report.kind}（${report.kind}）`,
+    `- 结论：${statusLabels[report.status] || report.status}（${report.status}）`,
+    `- 结论来源：${report.autoFinalized ? '自动收尾（人工可复核改正）' : '人工 / 前台回写'}`,
+    `- 开始时间：${report.startedAt || '—'}`,
+    `- 完成时间：${report.finishedAt || '—'}`
+  ]
+  lines.push(
+    run
+      ? `- agent 任务：#${run.id} · ${run.agent} · ${run.status}`
+      : '- agent 任务：未关联'
+  )
+  lines.push('', '## 摘要', '', report.summary || '—', '', '## 详情', '', report.detail || '—')
+  return lines.join('\n')
+}
+
+/**
  * 需求就绪门禁导出：把 buildRequirementReadiness 的聚合结果渲染成可贴进 issue / 评审记录的 markdown。
  * 与 renderAcceptanceMd / renderReleaseChecklistMd 同风格，便于三段结论一起贴进同一条记录。
  */

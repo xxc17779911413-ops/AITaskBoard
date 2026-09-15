@@ -12,6 +12,7 @@
   - `runTestCases`：选用例 → 拼提示词 → `startAgentRun` 派单 → 开 running 报告；`dryRun` 走纯预演分支。
   - `composeTestPrompt`：把用例拼成给 agent 的回归指令（显式要求 `PASS|FAIL|BLOCKED` 逐条结论）。
   - `renderAcceptanceMd`：聚合结果 → markdown 验收报告。
+  - `renderTestReportMd`：单条报告 → markdown 测试报告（含节点、类型、结论、run 关联、摘要与详情）；只读。
 - `server/http.mjs` / `cli.mjs` / `mcp.mjs`：三入口 1:1 暴露（只做参数装配 + 错误映射）。
 
 ## 2. 关键规则
@@ -80,6 +81,12 @@ CLI `test case upsert|update --enabled true|false`、`test report finish --run-i
 后续任何测试证据变化都会让签收变 `stale`。交付门禁只在「测试无阻塞 + 签收 accepted」时通过，
 `pending/rejected/stale` 一律阻塞。
 
+**R11 单条报告导出**：测试报告明细本身可由三入口导出为 markdown：
+`GET /api/test-reports/:rid?format=md`、CLI `test report get <rid> --format md`、MCP
+`test_report_get { id, format: "md" }`。导出是纯读——不落表、不动 revision；格式值域沿用
+`store.normalizeFormat`（`json` 缺省，非法值 `VALIDATION_FAILED`）。报告关联的用例可能已被删除，
+此时历史报告仍保留可导出，标题以「用例已删除」如实标注。
+
 ## 3. 踩坑 / 约束
 
 - `runTestCases(store, nodeId, …)` 的第一个参数是 **store**，不是 node；三入口装配时别传错
@@ -95,6 +102,9 @@ CLI `test case upsert|update --enabled true|false`、`test report finish --run-i
   因此 CLI 的 `test run` / `release check` 在非 dry-run 时用 `waitForAgentRun` 有界等待终态
   （缺省上限 30 分钟，`--wait-timeout 秒` 可调，`--no-wait` 显式退回只派单语义）；
   等待超时**不**算失败，返回当前状态并置 `waitTimedOut:true`，因为派单本身已成功。
+- **单条报告导出不要重新聚合最近结果**：`renderTestReportMd` 必须忠实渲染传入的那一行报告，
+  不能拿验收报告的最新结果替代；否则历史失败报告会被后续通过结果覆盖，追溯链断掉。
+- **删除用例不删除报告**：`case_id` 会被置空，导出时必须走「用例已删除」分支而不是抛错。
 
 ## 4. 关联章节
 
@@ -102,3 +112,4 @@ CLI `test case upsert|update --enabled true|false`、`test report finish --run-i
 - 接口表：`docs/design/04-api.md`「回归测试闭环」段
 - 接口示例：`docs/api.md`
 - 测试策略：`docs/design/08-testing.md`（单测分组：`test/test-case.test.mjs`）
+- 测试策略（单条报告导出）：`docs/design/08-testing.md`（`test/test-report-export.test.mjs`）

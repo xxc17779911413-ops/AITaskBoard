@@ -8,3 +8,5 @@
 - fix(regression-loop): `acceptance-report` 的 `scope` 收口为枚举校验（D2 连带修复）——此前 `scope === 'subtree' ? 'subtree' : 'self'` 把非法值静默吞成 `self`，在子树有未通过用例时会把验收结论判轻；现由 `store.normalizeScope` 统一校验（非法 → 400 `VALIDATION_FAILED`），HTTP/CLI/MCP 三入口透传原始值，与 readiness / release-checklist / delivery-gate 口径一致；test/http.test.mjs 补非法 scope 断言
 - fix(regression-loop): `buildAcceptanceReport` 只聚合启用中用例——此前停用用例也被计入 `notRun`，会在交付门禁里永久阻塞；现与 readiness「启用中的可回归用例」口径一致，停用用例不参与分桶/通过率/门禁
 - feat(acceptance-signoff): 验收签收闭环——测试通过后仍需业务显式 accepted/rejected，签收绑定证据指纹并自动 stale；交付门禁要求有效签收，三入口与 NodeDrawer 同步支持（详细记录见 features/acceptance-signoff/commit.md）
+
+- feat(regression-loop): 单条测试报告导出——新增 `renderTestReportMd`，把一条报告渲染成可贴进 issue / MR 的 markdown（节点 / 类型 / 结论 / 结论来源 / 起止时间 / agent 任务 / 摘要 / 详情）；三入口 1:1（`GET /api/test-reports/:rid?format=md` · CLI `test report get <rid> --format md` · MCP `test_report_get`）；`format` 沿用 `normalizeFormat`（非法值 `VALIDATION_FAILED`）；只读不落表不动 revision，用例删除后历史报告仍可导出；补 4 条 UT 覆盖 store 渲染、用例删除、HTTP / CLI / MCP 契约

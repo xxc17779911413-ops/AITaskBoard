@@ -475,9 +475,10 @@ curl -s -X PATCH http://127.0.0.1:3210/api/test-reports/3 \
 curl -s -X PATCH http://127.0.0.1:3210/api/test-reports/3 \
   -H 'content-type: application/json' -d '{"status":"fail","overwrite":true,"summary":"验收纠正"}'
 
-# 报告列表 / 单条
+# 报告列表 / 单条 / 单条报告导出
 curl -s 'http://127.0.0.1:3210/api/nodes/1/test-reports?limit=20'
 curl -s http://127.0.0.1:3210/api/test-reports/3
+curl -s 'http://127.0.0.1:3210/api/test-reports/3?format=md'
 
 # 验收报告：聚合最近结果与通过率；分桶守恒，running/notRun 不计入分母；format=md 可直接贴 issue / MR
 curl -s 'http://127.0.0.1:3210/api/nodes/1/acceptance-report?scope=subtree'
@@ -492,6 +493,11 @@ curl -s -X POST http://127.0.0.1:3210/api/nodes/1/acceptance-signoff \
 # node bin/taskboard.js test acceptance-status "项目A/需求1" [--scope self|subtree]
 # node bin/taskboard.js test acceptance-sign "项目A/需求1" --decision accepted --comment "业务确认通过"
 # MCP: acceptance_status { node, scope?, format? } / acceptance_sign { node, decision, scope?, comment? }
+
+# CLI：单条报告导出（只读；非法 format 返回 VALIDATION_FAILED）
+node bin/taskboard.js test report get 3 --format md
+
+# MCP：test_report_get { id: 3, format: "md" }
 ```
 
 ## 上线治理（上线配置 / 上线 SQL / 上线检查清单）

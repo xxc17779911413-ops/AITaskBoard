@@ -1,7 +1,7 @@
 import express from 'express'
 import fs from 'node:fs'
 import { AppError, CODES } from './errors.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, approveAndMerge, getMergeStatus, previewMerges, mergeUpstream, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, approveAndMerge, getMergeStatus, previewMerges, mergeUpstream, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline, renderTestReportMd } from './ops.mjs'
 import { setupWorkspace, getWorkspacePrompt, cleanupWorkspace } from './ops.mjs'
 import { startAgentRun, retryAndDispatch } from './agent.mjs'
 import { resolveRepoDir, pickBranchForCommit } from './git.mjs'
@@ -614,7 +614,14 @@ export function createApp({ store }) {
   )
   app.get(
     '/api/test-reports/:rid',
-    wrap((req, res) => res.json(store.getTestReport(Number(req.params.rid))))
+    wrap((req, res) => {
+      const report = store.getTestReport(Number(req.params.rid))
+      if (store.normalizeFormat(req.query.format) === 'md') {
+        res.type('text/markdown').send(renderTestReportMd(store, report))
+        return
+      }
+      res.json(report)
+    })
   )
   app.patch(
     '/api/test-reports/:rid',

@@ -73,7 +73,7 @@
 | DELETE | `/api/test-cases/:cid` | 删除用例（历史报告保留，`case_id` 置空） |
 | POST | `/api/nodes/:id/test-runs` | 派单执行：`{caseIds?, kind?, prompt?, agent?, model?, cwd?, dryRun?}`；为每条用例开 `running` 报告，返回 `{node, kind, run, reports}`（dryRun 只回用例与提示词）；任务落终态时自动收尾关联报告（见下） |
 | GET | `/api/nodes/:id/test-reports` | 报告列表（倒序）；`?caseId=&kind=&limit=` |
-| GET | `/api/test-reports/:rid` | 单条报告详情 |
+| GET | `/api/test-reports/:rid` | 单条报告详情；`?format=json\|md`（`md` 返回可贴进 issue / MR 的单条测试报告；非法 `format` → 400 `VALIDATION_FAILED`；**纯读，不动 revision**） |
 | PATCH | `/api/test-reports/:rid` | 回写报告 `{status, summary?, detail?, runId?, overwrite?}`；`running → 终态` 单向，终态同状态幂等；终态互转默认拒绝 `REPORT_STATUS_IMMUTABLE`（409），`overwrite:true` 才覆盖；**自动收尾（`autoFinalized=true`）的终态可无需 `overwrite` 直接改正**；非法 `status` → 400 `VALIDATION_FAILED` |
 | GET | `/api/nodes/:id/acceptance-report` | 验收报告聚合：`?scope=self\|subtree`，`?format=json\|md`（md 直接贴 issue/MR）。分桶总数守恒（`pass+fail+blocked+error+cancelled+running+notRun=cases`）；`running`/`notRun` 不计入通过率分母 |
 | GET | `/api/nodes/:id/acceptance-status` | 验收签收状态：`?scope=self\|subtree`，`?format=json\|md`。返回测试证据、签收结论与 `pending/accepted/rejected/stale`；证据变化让签收自动失效 |

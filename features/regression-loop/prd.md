@@ -1,6 +1,6 @@
 # 功能：回归测试闭环（AI 可回归测试 → 测试/验收报告）
 
-- 代码：`server/store.mjs`（test_cases / test_reports 部分）、`server/ops.mjs`（runTestCases / composeTestPrompt / renderAcceptanceMd）、`server/db.mjs`（表结构）
+- 代码：`server/store.mjs`（test_cases / test_reports 部分）、`server/ops.mjs`（runTestCases / composeTestPrompt / renderAcceptanceMd / renderTestReportMd）、`server/db.mjs`（表结构）
 - 入口：HTTP（`/api/nodes/:id/test-cases`、`/test-runs`、`/test-reports`、`/acceptance-report`）· CLI（`test case|run|report|acceptance`）· MCP（`test_case_*` / `test_run` / `test_report_*` / `acceptance_report`）
 - 主设计文档：`../../docs/design.md` §4.14（数据模型）；`../../docs/design/04-api.md`（接口表）
 
@@ -22,6 +22,7 @@
 - R7 验收报告：按节点（`self` 或 `subtree`）聚合每个用例的**最近一次结果**、通过率与未覆盖清单；分桶**总数守恒**（`pass+fail+blocked+error+cancelled+running+notRun=cases`），`running` / `notRun` 不计入通过率分母（`settled` 口径）；支持 `format=md` 直接贴进 issue / MR。
 - R7b 报告状态机：`running → 终态` 单向；终态重复提交同状态幂等；终态互转 / 回退 `running` 默认拒绝（`REPORT_STATUS_IMMUTABLE`），`overwrite:true` 显式覆盖；非法 `status` 应用层拦成 `VALIDATION_FAILED`。
 - R7c 引用完整性：报告 `caseId` 必须与节点同属，`runId` 必须存在（否则 `VALIDATION_FAILED` / `NOT_FOUND`）。
+- R7d 单条报告导出：`test report get <rid> --format md` / `GET /api/test-reports/:rid?format=md` / MCP `test_report_get {id, format:"md"}` 将一条报告渲染成可贴进 issue / MR 的 markdown；只读，不落表、不动 revision；用例删除后历史报告仍可导出（标题注明“用例已删除”）。
 - R8 审计：所有写入 `revision` +1，并记录 `created_by` / `updated_by`（user / ai / cli / import / mcp）。
 - R9 验收签收：测试全过后仍需业务方显式 `accepted` / `rejected`；签收绑定测试证据指纹，
   用例 / 期望 / 最近报告结论变化后旧签收自动 `stale`，不得继续作为交付依据。
@@ -36,6 +37,7 @@
 ## 4. 验收标准
 
 - `test/test-case.test.mjs`：用例 CRUD、按名唯一与 upsert 幂等、`kind` 筛选、启停、排序、随节点级联删除；报告的开启 / 回写 / 筛选 / 删除用例后保留历史；验收报告聚合（最近结果、通过率、未执行口径）、`scope=subtree`、空态；编排层 `dryRun` 与提示词拼装。
+- `test/test-report-export.test.mjs`：单条报告 markdown 渲染（关联用例 / 节点 / 结论 / run 信息 / 摘要与详情）、用例删除后的历史导出、只读不改 revision；HTTP / CLI / MCP 三入口 `format` 契约（合法 md、非法 `VALIDATION_FAILED`）。
 - `test/http.test.mjs`：全链路（upsert → dryRun → 报告 → 验收报告）、重名返回 `TEST_CASE_NAME_EXISTS`、报告列表 / 单条 / 回写终态。
 - `test/acceptance-signoff.test.mjs`：签收 / 驳回、证据变化 stale、空用例拒绝；HTTP / CLI / MCP 一致。
 - `npm test` 全绿；三入口 1:1；文档同步更新（本目录 + `docs/design/02-data-model.md` + `docs/design/04-api.md` + `docs/api.md` + `features/README.md`）。

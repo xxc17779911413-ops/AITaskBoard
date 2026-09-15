@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util'
 import { openDb } from './db.mjs'
 import { createStore } from './store.mjs'
 import { loadConfig, saveConfig, maskToken, DB_PATH } from './config.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline, renderTestReportMd } from './ops.mjs'
 import { setupWorkspace, getWorkspacePrompt, cleanupWorkspace } from './ops.mjs'
 import { startAgentRun, retryAndDispatch, waitForAgentRun } from './agent.mjs'
 import { saveUpload } from './uploads.mjs'
@@ -149,7 +149,7 @@ const HELP = `task-board <命令>
   test run <ref> [--kind k] [--case-ids "1,2"] [--prompt "额外要求"] [--dry-run] [--no-wait] [--wait-timeout 秒]
                                     派单执行用例（自动开报告）；默认等到 run 终态并自动收尾报告，--no-wait 只派单
   test report list <ref> [--kind k] [--case-id <id>]      测试报告列表
-  test report get <rid> / test report finish <rid> --status pass|fail|blocked|error|cancelled [--summary s] [--detail d] [--run-id N] [--overwrite]
+  test report get <rid> [--format json|md] / test report finish <rid> --status pass|fail|blocked|error|cancelled [--summary s] [--detail d] [--run-id N] [--overwrite]
   test acceptance <ref> [--scope self|subtree] [--format json|md]   验收报告（聚合最近结果）
   test acceptance-status <ref> [--scope self|subtree] [--format json|md]   验收签收状态（测试证据 + 业务签收）
   test acceptance-sign <ref> --decision accepted|rejected [--scope self|subtree] [--comment "验收意见"]   签收 / 驳回
@@ -521,7 +521,11 @@ export async function run(argv) {
             limit: values.limit ? Number(values.limit) : 100
           })
         )
-      else if (sub === 'get') json(store.getTestReport(Number(arg)))
+      else if (sub === 'get') {
+        const report = store.getTestReport(Number(arg))
+        if (store.normalizeFormat(values.format) === 'md') process.stdout.write(renderTestReportMd(store, report) + '\n')
+        else json(report)
+      }
       else if (sub === 'finish')
         json(
           store.finishTestReport(Number(arg), {
