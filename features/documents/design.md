@@ -50,3 +50,16 @@ restoreDocumentVersion(docId, versionId, by) // → { document, version }
 ## 5. 与主设计文档的对应
 
 §4.6 的表结构与 `UNIQUE(node_id, name)`；§7.7 的「表格点 📄 数量 → 抽屉文档区」由计划 3 的 UI 消费这里的读写接口；§5.2 约定的「长文本一律走文档」即本功能存在的理由（属性只放结构化短字段）。
+
+## 6. 文档管理聚合（纯读）
+
+`store.documentOverview({ projectId, status, q, docName, fill })` 复用 `listRequirements()` 的节点范围与
+`readiness.requirementDoc` / `readiness.designDoc` 口径：
+
+- `items` 展平该项目/状态范围内的文档，附带需求路径、核心文档标记、正文预览与 `filled`。
+- `gaps` 逐需求 × 逐核心文档计算缺口；`gapType=missing` 表示槽位未关联，`gapType=empty` 表示已关联但正文空白。
+- `summary` 同时给出槽位总数、已关联、已填写、空白、未关联、缺口需求数与筛选后条数；筛选后的 `summary.filtered*` 与实际列表长度一致。
+- `fill` 只接受 `filled|empty`，非法值 `VALIDATION_FAILED`；未知 `projectId` 返回空态而不是全库。
+
+HTTP / CLI / MCP 只做参数装配；Web 的「文档管理」页用该聚合做检索、缺口对账与需求定位，
+点击后仍通过 `DocPane` 走原有文档编辑链路，避免第二套编辑器。

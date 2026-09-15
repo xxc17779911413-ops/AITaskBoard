@@ -87,6 +87,7 @@ const REQUIREMENT_TRANSITIONS = {
   cancelled: ['todo']
 }
 const DEFAULT_REQUIREMENT_STATUSES = Object.keys(REQUIREMENT_TRANSITIONS)
+const DOCUMENT_FILL_VALUES = ['filled', 'empty']
 
 /**
  * 上线前置检查的**执行**复用 `test_cases` 的 kind 扩展轴：代码检查 / 业务检查 / 上线检查三类用例。
@@ -136,10 +137,56 @@ function parseRunVerdicts(text) {
 export function createStore(db, options = {}) {
   const docPresets = options.docPresets || DEFAULT_DOC_PRESETS
   const readiness = options.readiness || DEFAULT_READINESS
-  const requirementStatuses = Array.isArray(options.status?.allowed?.requirement) && options.status.allowed.requirement.length
-    ? options.status.allowed.requirement.map(String)
+  const transitionStatuses = Object.keys(REQUIREMENT_TRANSITIONS)
+  const configuredRequirementStatuses = Array.isArray(options.status?.allowed?.requirement) && options.status.allowed.requirement.length
+    ? [...new Set(options.status.allowed.requirement.map(String))]
     : DEFAULT_REQUIREMENT_STATUSES
+  const unknownRequirementStatuses = configuredRequirementStatuses.filter((s) => !transitionStatuses.includes(s))
+  if (unknownRequirementStatuses.length) {
+    throw new AppError(
+      CODES.VALIDATION_FAILED,
+      `status.allowed.requirement 包含未定义流转规则的状态：${unknownRequirementStatuses.join(', ')}`,
+      { invalid: unknownRequirementStatuses, allowed: transitionStatuses }
+    )
+  }
+  if (!configuredRequirementStatuses.includes('todo')) {
+    throw new AppError(CODES.VALIDATION_FAILED, 'status.allowed.requirement 必须包含起始状态 todo', {
+      allowed: configuredRequirementStatuses,
+      required: 'todo'
+    })
+  }
+  const requirementStatuses = transitionStatuses.filter((s) => configuredRequirementStatuses.includes(s))
   const requirementStatusSet = new Set(requirementStatuses)
+  const requirementTransitions = Object.fromEntries(
+    requirementStatuses.map((s) => [s, (REQUIREMENT_TRANSITIONS[s] || []).filter((t) => requirementStatusSet.has(t))])
+  )
+  const deadEndStatuses = requirementStatuses.filter(
+    (s) => s !== 'done' && (requirementTransitions[s] || []).length === 0
+  )
+  if (deadEndStatuses.length) {
+    throw new AppError(
+      CODES.VALIDATION_FAILED,
+      `status.allowed.requirement 会产生无法继续流转的状态：${deadEndStatuses.join(', ')}`,
+      { deadEnd: deadEndStatuses, transitions: requirementTransitions }
+    )
+  }
+  const reachable = new Set(['todo'])
+  const queue = ['todo']
+  while (queue.length) {
+    const cur = queue.shift()
+    for (const next of requirementTransitions[cur] || []) {
+      if (!reachable.has(next)) {
+        reachable.add(next)
+        queue.push(next)
+      }
+    }
+  }
+  if (!reachable.has('done')) {
+    throw new AppError(CODES.VALIDATION_FAILED, 'status.allowed.requirement 必须保证 done 从 todo 可达', {
+      reachable: [...reachable],
+      transitions: requirementTransitions
+    })
+  }
   const stmt = (sql) => db.prepare(sql)
 
   let bumpDepth = 0
@@ -287,7 +334,7 @@ export function createStore(db, options = {}) {
   }
 
   function canTransitionRequirement(from, to) {
-    return (REQUIREMENT_TRANSITIONS[from] || []).includes(to)
+    return (requirementTransitions[from] || []).includes(to)
   }
 
   const requirementDocNames = () => [
@@ -321,7 +368,7 @@ export function createStore(db, options = {}) {
       documents: listDocuments(node.id),
       docState: requirementDocState(node.id),
       readiness,
-      canTransitionTo: REQUIREMENT_TRANSITIONS[node.status] || []
+      canTransitionTo: requirementTransitions[node.status] || []
     }
   }
 
@@ -354,16 +401,16 @@ export function createStore(db, options = {}) {
     if (cur.type !== 'requirement') {
       throw new AppError(CODES.VALIDATION_FAILED, `节点 ${cur.id} 不是需求条目`, { nodeId: cur.id, nodeType: cur.type })
     }
-    if (!Object.prototype.hasOwnProperty.call(REQUIREMENT_TRANSITIONS, status)) {
+    if (!requirementStatusSet.has(status)) {
       throw new AppError(CODES.VALIDATION_FAILED, `未知需求状态 ${status}`, {
         status,
-        allowed: Object.keys(REQUIREMENT_TRANSITIONS)
+        allowed: [...requirementStatusSet]
       })
     }
-    if (!Object.prototype.hasOwnProperty.call(REQUIREMENT_TRANSITIONS, cur.status)) {
+    if (!requirementStatusSet.has(cur.status)) {
       throw new AppError(CODES.VALIDATION_FAILED, `需求当前状态 ${cur.status} 不在受控流转图内`, {
         status: cur.status,
-        allowed: Object.keys(REQUIREMENT_TRANSITIONS)
+        allowed: [...requirementStatusSet]
       })
     }
     if (cur.status === status) return requirementVO(cur)
@@ -371,7 +418,7 @@ export function createStore(db, options = {}) {
       throw new AppError(CODES.VALIDATION_FAILED, `需求不能从 ${cur.status} 流转到 ${status}`, {
         from: cur.status,
         to: status,
-        allowed: REQUIREMENT_TRANSITIONS[cur.status] || []
+        allowed: requirementTransitions[cur.status] || []
       })
     }
     updateNode(nodeId, { status }, by, { allowRequirementTransition: true })
@@ -382,19 +429,112 @@ export function createStore(db, options = {}) {
     const items = listRequirements({ projectId, status })
     const byStatus = {}
     for (const key of requirementStatuses) byStatus[key] = 0
+    let unknownStatusCount = 0
     let missingRequirementDoc = 0
     let missingDesignDoc = 0
     for (const item of items) {
       if (Object.prototype.hasOwnProperty.call(byStatus, item.status)) byStatus[item.status] += 1
+      else unknownStatusCount += 1
       const [requirementDoc, designDoc] = requirementDocNames()
       if (!item.docState.find((d) => d.name === requirementDoc).filled) missingRequirementDoc += 1
       if (!item.docState.find((d) => d.name === designDoc).filled) missingDesignDoc += 1
     }
     return {
-      total: Object.values(byStatus).reduce((sum, n) => sum + n, 0),
+      total: items.length,
       byStatus,
+      unknownStatusCount,
       missingRequirementDoc,
       missingDesignDoc
+    }
+  }
+
+  function documentOverview({ projectId = null, status = null, q = null, docName = null, fill = null } = {}) {
+    const fillValue = fill === null || fill === undefined || fill === '' ? null : String(fill)
+    if (fillValue !== null && !DOCUMENT_FILL_VALUES.includes(fillValue)) {
+      throw new AppError(CODES.VALIDATION_FAILED, `未知文档填充筛选 ${fill}`, {
+        fill,
+        allowed: DOCUMENT_FILL_VALUES
+      })
+    }
+    const requirements = listRequirements({ projectId, status })
+    const expectedNames = requirementDocNames()
+    const query = q === null || q === undefined ? '' : String(q).trim().toLowerCase()
+    const nameFilter = docName === null || docName === undefined ? '' : String(docName).trim()
+    const allDocuments = []
+    const gaps = []
+    const matchesText = (...values) =>
+      !query || values.some((v) => String(v || '').toLowerCase().includes(query))
+
+    for (const req of requirements) {
+      for (const doc of req.documents) {
+        const content = String(doc.content || '')
+        allDocuments.push({
+          ...doc,
+          contentPreview: content.replace(/\s+/g, ' ').trim().slice(0, 160),
+          contentLength: content.trim().length,
+          filled: content.trim() !== '',
+          isRequired: expectedNames.includes(doc.name),
+          nodeName: req.name,
+          nodeType: req.type,
+          nodeStatus: req.status,
+          path: req.path,
+          projectId: req.projectId,
+          projectName: req.projectName
+        })
+      }
+      for (const expected of expectedNames) {
+        const doc = req.documents.find((d) => d.name === expected) || null
+        if (doc && String(doc.content || '').trim() !== '') continue
+        gaps.push({
+          nodeId: req.id,
+          nodeName: req.name,
+          nodeType: req.type,
+          nodeStatus: req.status,
+          path: req.path,
+          projectId: req.projectId,
+          projectName: req.projectName,
+          docName: expected,
+          documentId: doc ? doc.id : null,
+          linked: !!doc,
+          filled: false,
+          gapType: doc ? 'empty' : 'missing'
+        })
+      }
+    }
+
+    let items = allDocuments
+    if (nameFilter) items = items.filter((d) => d.name === nameFilter)
+    if (fillValue === 'filled') items = items.filter((d) => d.filled)
+    if (fillValue === 'empty') items = items.filter((d) => !d.filled)
+    if (query) items = items.filter((d) => matchesText(d.name, d.content, d.nodeName, d.path, d.projectName))
+
+    let filteredGaps = gaps
+    if (nameFilter) filteredGaps = filteredGaps.filter((g) => g.docName === nameFilter)
+    if (fillValue === 'filled') filteredGaps = []
+    if (query) filteredGaps = filteredGaps.filter((g) => matchesText(g.nodeName, g.path, g.projectName, g.docName))
+
+    const linkedRequired = allDocuments.filter((d) => d.isRequired).length
+    const filledRequired = allDocuments.filter((d) => d.isRequired && d.filled).length
+    const requiredSlots = requirements.length * expectedNames.length
+
+    return {
+      scope: { projectId, status: status || null },
+      expectedDocNames: expectedNames,
+      summary: {
+        requirementCount: requirements.length,
+        documentCount: allDocuments.length,
+        requiredSlotCount: requiredSlots,
+        linkedRequiredSlotCount: linkedRequired,
+        filledRequiredSlotCount: filledRequired,
+        emptyRequiredSlotCount: linkedRequired - filledRequired,
+        unlinkedRequiredSlotCount: requiredSlots - linkedRequired,
+        missingRequiredSlotCount: requiredSlots - filledRequired,
+        gapRequirementCount: new Set(gaps.map((g) => g.nodeId)).size,
+        filteredDocumentCount: items.length,
+        filteredGapCount: filteredGaps.length
+      },
+      items,
+      gaps: filteredGaps
     }
   }
 
@@ -413,14 +553,14 @@ export function createStore(db, options = {}) {
         cur.type === 'requirement' &&
         !options.allowRequirementTransition &&
         patch.status !== cur.status &&
-        Object.prototype.hasOwnProperty.call(REQUIREMENT_TRANSITIONS, cur.status) &&
-        Object.prototype.hasOwnProperty.call(REQUIREMENT_TRANSITIONS, patch.status) &&
-        !canTransitionRequirement(cur.status, patch.status)
+        requirementStatusSet.has(patch.status) &&
+        !canTransitionRequirement(cur.status, patch.status) &&
+        requirementStatusSet.has(cur.status)
       ) {
         throw new AppError(CODES.VALIDATION_FAILED, `需求不能从 ${cur.status} 流转到 ${patch.status}`, {
           from: cur.status,
           to: patch.status,
-          allowed: REQUIREMENT_TRANSITIONS[cur.status] || []
+          allowed: requirementTransitions[cur.status] || []
         })
       }
       fields.push('status = ?')
@@ -3313,6 +3453,7 @@ export function createStore(db, options = {}) {
     createRequirement,
     transitionRequirement,
     requirementSummary,
+    documentOverview,
     REQUIREMENT_TRANSITIONS,
     getNode: (id) => nodeVO(rawNode(id)),
     resolveRef,

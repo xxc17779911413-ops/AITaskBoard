@@ -239,6 +239,31 @@ export function createApp({ store }) {
     })
   )
 
+  app.get(
+    '/api/documents/overview',
+    wrap((req, res) => {
+      let projectId = null
+      if (req.query.projectId !== undefined) {
+        const rawProjectId = String(req.query.projectId).trim()
+        if (!/^\d+$/.test(rawProjectId)) {
+          throw new AppError(CODES.VALIDATION_FAILED, `projectId 必须是正整数，收到 ${req.query.projectId}`, {
+            projectId: req.query.projectId
+          })
+        }
+        projectId = Number(rawProjectId)
+      }
+      res.json(
+        store.documentOverview({
+          projectId,
+          status: req.query.status || null,
+          q: req.query.q || null,
+          docName: req.query.docName || null,
+          fill: req.query.fill || null
+        })
+      )
+    })
+  )
+
   app.post(
     '/api/nodes/upsert',
     wrap((req, res) => {

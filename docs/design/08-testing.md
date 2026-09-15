@@ -34,6 +34,8 @@
   - `e2e-mainline`（`npm run e2e:mainline`）：**主链路端到端回归守门测试**——在独立进程 + 隔离 `TASKBOARD_HOME` 下运行 `scripts/e2e-mainline.mjs`，只走 CLI / HTTP 公开入口，串起需求管理 → 概要设计 → 文档 → 思维导图 → 可回归用例 → 测试/验收报告 → 验收签收 → 上线治理 → 交付门禁九段；关键断言是交付门禁的**两态**（无测试证据 `not_ready`、证据齐备 `ready`），避免把「只会返回 ready 的门禁」误判为通过；并抽查 HTTP 与 CLI 的 readiness / mindmap / delivery-gate 结论一致
   - `delivery-gate`：交付门禁汇总三段既有结论——空证据 `unknown`（不伪造成可交付）、需求就绪但测试未执行 `not_ready`、`not_run`/`running` 显式分桶与 blocker 明细、三段通过 / 不适用不阻塞 `ready`、必做上线项未完成覆盖测试通过结论、停用用例不参与门禁；`scope=subtree` 联动；阻塞项展平到条目级；`scope`/`format` 非法值三入口统一 `VALIDATION_FAILED`；markdown 单元格转义；**纯读聚合不产生 revision**；能力清单登记
   - `delivery-gate-mcp`：MCP 真实协议调用 `delivery_gate`（JSON / md / subtree）、非法 `scope`/`format` 返回 `isError + VALIDATION_FAILED`、与 store / HTTP / CLI 逐字段一致
+  - `document-overview`：需求文档集中检索与缺口对账——核心槽位统计、关键词/文档名/fill 筛选、
+    非法 fill、空项目范围；HTTP / CLI / MCP 与 store 逐字段一致；纯读不产生 revision
   - `requirement-management`：需求条目创建时自动关联核心文档、列表筛选与 KPI、文档缺口统计、
     受控状态流转（合法路径 / 非法跳转 / 取消恢复）、通用 `node.update` 不能绕过状态机；
     HTTP / CLI / MCP 三入口一致

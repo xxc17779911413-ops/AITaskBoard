@@ -18,6 +18,7 @@ export const TOOLS = [
   'requirement_list',
   'requirement_create',
   'requirement_transition',
+  'document_overview',
   'attr_defs',
   'attr_add',
   'attr_update',

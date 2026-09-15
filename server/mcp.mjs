@@ -166,6 +166,23 @@ export function createMcpServer({ store }) {
     })
   )
 
+  server.tool(
+    'document_overview',
+    '需求文档集中检索：跨需求列出文档、查看关联/填充状态与缺口对账',
+    {
+      project: z.string().optional(),
+      status: z.string().optional(),
+      q: z.string().optional(),
+      docName: z.string().optional(),
+      fill: z.string().optional()
+    },
+    mcpValidate(async ({ project, status, q, docName, fill }) => {
+      const projectId = project ? store.resolveRef(project).id : null
+      const data = store.documentOverview({ projectId, status: status || null, q: q || null, docName: docName || null, fill: fill || null })
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] }
+    })
+  )
+
   // ---------- 属性 ----------
 
   server.tool(

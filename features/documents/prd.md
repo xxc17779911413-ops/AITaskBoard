@@ -28,3 +28,13 @@
 
 - `test/store-docs.test.mjs`：按类型预置文档、按名 upsert 幂等且覆盖内容、重名新建与改名撞名报 `DOC_NAME_EXISTS`、排序与删除
 - `test/document-history.test.mjs`：创建 / 更新留痕、恢复追加新版本、重名恢复拒绝、HTTP / CLI / MCP 一致性、老库迁移幂等
+## 4. 文档管理垂直切片（需求文档集中管理）
+
+- R8 集中检索：只读聚合需求两层（`requirement` / `subreq`）的文档，可按项目、状态、关键词、文档名与填充状态筛选。
+- R9 列表字段：每条返回文档名、正文预览、所属需求/路径/状态、是否核心文档、是否已填写，供 UI 直接展示。
+- R10 关联缺口对账：按配置的 `readiness.requirementDoc` / `readiness.designDoc` 计算要求节点 × 核心文档槽位，显式返回未关联 / 空白 / 已填写数量与缺口行。
+- R11 复用编辑链路：Web 只提供检索和定位，打开文档仍复用现有 `DocPane`；不复制编辑器与保存逻辑。
+- R12 三入口一致：HTTP（`GET /api/documents/overview`）· CLI（`document overview`）· MCP（`document_overview`）复用同一 store 聚合。
+- R13 纯读：集中检索与缺口对账不写库、不动 revision。
+
+验收补充：`test/document-overview.test.mjs` 覆盖统计/筛选/非法 fill/空态；`test/document-overview-entrypoints.test.mjs` 覆盖 HTTP / CLI / MCP 与 store 逐字段一致。

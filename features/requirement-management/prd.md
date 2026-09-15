@@ -19,6 +19,8 @@
 - R3 状态机：`todo → doing → testing → done`；未完成前可 `cancelled`；`cancelled → todo` 可恢复；
   `done` 不可回退。非法跳转与枚举外状态返回 `VALIDATION_FAILED`，通用 create/update/upsert/batch
   也不能绕过；需求创建只允许从 `todo` 起始。
+- R3a 配置收口：`config.status.allowed.requirement` 只能收窄上述 workflow，不能新增图外状态；
+  含未知状态或缺 `todo` 的配置在启动期拒绝。收窄后 `canTransitionTo`、流转校验与 KPI 列必须共用同一有效状态集。
 - R4 文档关联可见：列表显示每份核心文档是「未关联 / 空白 / 已填写」，并统计两类缺口。
 - R5 三入口 1:1：HTTP / CLI / MCP 复用同一 store 能力，Web 只做参数装配和展示。
 - R6 纯读列表不写库、不动 revision；创建和状态流转各只产生一次 revision。

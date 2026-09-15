@@ -196,6 +196,47 @@ curl -s -X POST http://127.0.0.1:3210/api/requirements/2/transition \
 > 创建需求会把「需求内容」和「概要设计」两份文档槽位一次性建好；`filled=false` 只表示文档已关联但正文仍为空。
 > 非法状态跳转返回 `400 VALIDATION_FAILED`，通用 `PATCH /api/nodes/:id` 也不能绕过需求状态机。
 
+## 文档管理（需求文档集中检索 / 缺口对账）
+
+```bash
+# 集中列出需求文档；可按项目 / 需求状态 / 关键词 / 文档名 / 填充状态筛选
+curl -s 'http://127.0.0.1:3210/api/documents/overview?projectId=1'
+curl -s 'http://127.0.0.1:3210/api/documents/overview?projectId=1&q=导出'
+curl -s 'http://127.0.0.1:3210/api/documents/overview?projectId=1&docName=概要设计&fill=empty'
+
+# CLI / MCP 等价入口
+# node bin/taskboard.js document overview --project "项目A" [--q 导出] [--doc-name 概要设计] [--fill empty]
+# MCP: document_overview { project, status?, q?, docName?, fill? }
+```
+
+```json
+{
+  "scope": { "projectId": 1, "status": null },
+  "expectedDocNames": ["需求内容", "概要设计"],
+  "summary": {
+    "requirementCount": 2,
+    "documentCount": 3,
+    "requiredSlotCount": 4,
+    "filledRequiredSlotCount": 1,
+    "emptyRequiredSlotCount": 2,
+    "unlinkedRequiredSlotCount": 1,
+    "missingRequiredSlotCount": 3,
+    "gapRequirementCount": 2,
+    "filteredDocumentCount": 3,
+    "filteredGapCount": 3
+  },
+  "items": [
+    { "id": 4, "name": "需求内容", "nodeName": "需求1", "filled": true, "isRequired": true, "path": "项目A/需求1" }
+  ],
+  "gaps": [
+    { "nodeName": "需求1", "docName": "概要设计", "linked": true, "gapType": "empty" }
+  ]
+}
+```
+
+> `fill` 只接受 `filled` / `empty`，非法值返回 `400 VALIDATION_FAILED`。
+> 聚合不写库、不动 revision；点击文档后仍复用原有文档编辑链路。
+
 ## 幂等写入（AI 首选）
 
 ### 按路径 get-or-create

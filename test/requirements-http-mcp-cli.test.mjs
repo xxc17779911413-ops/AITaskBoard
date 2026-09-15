@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -265,4 +266,99 @@ test('CLI 枚举外状态值与通用更新统一拒绝', async (t) => {
     assert.ok(out, args.join(' '))
     assert.match(out, /VALIDATION_FAILED/)
   }
+})
+
+test('CLI + config.json：自定义图外状态启动期拒绝，收窄配置的下一步保持可执行', async (t) => {
+  const tmp = await tempHome()
+  t.after(() => tmp.cleanup())
+  const cli = (args) =>
+    execFileP('node', [CLI, ...args], { env: { ...process.env, TASKBOARD_HOME: tmp.dir }, encoding: 'utf8' }).then((r) =>
+      JSON.parse(r.stdout)
+    )
+  const cliFail = async (args) => {
+    try {
+      await execFileP('node', [CLI, ...args], { env: { ...process.env, TASKBOARD_HOME: tmp.dir }, encoding: 'utf8' })
+      return null
+    } catch (e) {
+      return String(e.stderr || '') + String(e.stdout || '')
+    }
+  }
+
+  const writeAllowed = (allowed) => {
+    const file = path.join(tmp.dir, 'config.json')
+    const cfg = JSON.parse(fs.readFileSync(file, 'utf8'))
+    cfg.status.allowed.requirement = allowed
+    fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + '\n')
+  }
+
+  await cli(['node', 'upsert', '--path', 'P'])
+  writeAllowed(['todo', 'doing', 'testing', 'done', 'cancelled', 'blocked'])
+  const bad = await cliFail(['node', 'upsert', '--path', 'P'])
+  assert.ok(bad)
+  assert.match(bad, /VALIDATION_FAILED/)
+
+  writeAllowed(['todo', 'doing', 'testing', 'done'])
+  await cli(['node', 'upsert', '--path', 'P'])
+  const created = await cli(['requirement', 'create', '--project', 'P', '--name', 'R'])
+  assert.deepEqual(created.canTransitionTo, ['doing'])
+
+  const doing = await cli(['requirement', 'transition', 'P/R', '--status', 'doing'])
+  assert.deepEqual(doing.canTransitionTo, ['testing'])
+  const cancelled = await cliFail(['requirement', 'transition', 'P/R', '--status', 'cancelled'])
+  assert.ok(cancelled)
+  assert.match(cancelled, /VALIDATION_FAILED/)
+
+  const list = await cli(['requirement', 'list', '--project', 'P'])
+  assert.equal(list.summary.total, 1)
+  assert.equal(list.summary.byStatus.cancelled, undefined)
+  assert.equal(list.items[0].canTransitionTo[0], 'testing')
+})
+
+test('HTTP /api/requirements 与 MCP 启动路径拒绝终态不可达 workflow', async (t) => {
+  const tmp = await tempHome()
+  t.after(() => tmp.cleanup())
+  const cli = (args) =>
+    execFileP('node', [CLI, ...args], { env: { ...process.env, TASKBOARD_HOME: tmp.dir }, encoding: 'utf8' })
+  await cli(['node', 'upsert', '--path', 'P'])
+
+  const configFile = path.join(tmp.dir, 'config.json')
+  const cfg = JSON.parse(fs.readFileSync(configFile, 'utf8'))
+  cfg.status.allowed.requirement = ['todo', 'doing', 'done']
+  fs.writeFileSync(configFile, JSON.stringify(cfg, null, 2) + '\n')
+
+  const runProbe = (source) =>
+    execFileP('node', ['-e', source], {
+      cwd: path.resolve(import.meta.dirname, '..'),
+      env: { ...process.env, TASKBOARD_HOME: tmp.dir },
+      encoding: 'utf8'
+    }).then(
+      () => null,
+      (e) => e
+    )
+
+  const httpFail = await runProbe(`
+    const { startServer } = await import('./server/index.mjs')
+    try {
+      await startServer({ port: 0, open: false })
+      process.exit(0)
+    } catch (e) {
+      console.error(e.code || 'ERROR')
+      process.exit(1)
+    }
+  `)
+  assert.ok(httpFail)
+  assert.match(String(httpFail.stderr || ''), /VALIDATION_FAILED/)
+
+  const mcpFail = await runProbe(`
+    const { runMcp } = await import('./server/mcp.mjs')
+    try {
+      await runMcp()
+      process.exit(0)
+    } catch (e) {
+      console.error(e.code || 'ERROR')
+      process.exit(1)
+    }
+  `)
+  assert.ok(mcpFail)
+  assert.match(String(mcpFail.stderr || ''), /VALIDATION_FAILED/)
 })

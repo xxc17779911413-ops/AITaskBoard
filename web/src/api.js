@@ -41,6 +41,16 @@ export default {
       method: 'POST',
       body: JSON.stringify({ status })
     }),
+  documentOverview: ({ projectId, status, q, docName, fill } = {}) => {
+    const qs = new URLSearchParams()
+    if (projectId) qs.set('projectId', projectId)
+    if (status) qs.set('status', status)
+    if (q) qs.set('q', q)
+    if (docName) qs.set('docName', docName)
+    if (fill) qs.set('fill', fill)
+    const suffix = qs.toString() ? `?${qs}` : ''
+    return api(`/documents/overview${suffix}`)
+  },
 
   // 属性定义
   attrDefs: (nodeType) => api(`/attr-defs${nodeType ? `?nodeType=${nodeType}` : ''}`),

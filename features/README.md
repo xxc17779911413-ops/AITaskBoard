@@ -16,7 +16,7 @@
 | 工程基座与配置 | `foundation/` | 计划 1 | package.json、test/helpers.mjs、server/{errors,config,db}.mjs |
 | 节点树与增删改（含 `defect` 类型） | `node-tree/` | 计划 1 | server/store.mjs（节点部分）|
 | 属性系统 | `attributes/` | 计划 1 | server/store.mjs（属性部分）|
-| **文档（Markdown 多份）** | `documents/` | 计划 1 | server/store.mjs（文档部分）+ `document_versions` 历史/恢复 |
+| 文档（Markdown 多份 + 需求文档集中管理/缺口对账） | `documents/` | 计划 1 | server/store.mjs（文档部分）+ `documentOverview`；三入口 + DocumentsView |
 | 变更可见与审计（revision） | `revision/` | 计划 1 | server/store.mjs（revision / 审计）|
 | commit 手工登记 | `commit-registry/` | 计划 1 建表 · 计划 2 入口 | server/store.mjs（commits 部分）|
 | 三入口：HTTP API / CLI / MCP | `entrypoints/` | 计划 2 | server/{http,cli,mcp,index,ops}.mjs、bin/taskboard.js |

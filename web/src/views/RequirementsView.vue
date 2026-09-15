@@ -18,6 +18,7 @@
       <el-statistic title="已完成" :value="summary.byStatus?.done || 0" />
       <el-statistic title="缺需求内容" :value="summary.missingRequirementDoc || 0" />
       <el-statistic title="缺概要设计" :value="summary.missingDesignDoc || 0" />
+      <el-statistic title="历史未知状态" :value="summary.unknownStatusCount || 0" />
     </div>
 
     <el-table :data="items" v-loading="loading" row-key="id" border stripe size="small" class="req-table">
@@ -188,7 +189,7 @@ onMounted(async () => {
 <style scoped>
 .requirements-view { height:100%; display:flex; flex-direction:column; padding:0 0 12px; }
 .toolbar { padding:8px 12px; display:flex; align-items:center; gap:8px; background:#f5f7fa; border-bottom:1px solid #e4e7ed; }
-.summary { display:grid; grid-template-columns:repeat(6, minmax(100px, 1fr)); gap:12px; padding:12px; border-bottom:1px solid #e4e7ed; background:#fff; }
+.summary { display:grid; grid-template-columns:repeat(7, minmax(100px, 1fr)); gap:12px; padding:12px; border-bottom:1px solid #e4e7ed; background:#fff; }
 .req-table { flex:1; }
 .req-name { font-weight:500; color:#303133; }
 .req-path { margin-top:2px; font-size:12px; color:#909399; }
