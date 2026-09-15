@@ -181,8 +181,12 @@ async function main() {
 
   for (const it of items) await cli(['release', 'item', 'update', String(it.id), '--status', 'done'])
   checklist = await cli(['release', 'checklist', String(req.id), '--scope', 'subtree'])
-  assert(checklist.ready === true, '必做项完成后上线清单应 ready', checklist.totals)
-  step('上线检查：必做项完成后 → ready=true')
+  // 决策 42：就绪 = 必做项全完成 **且** 检查用例全部 pass。
+  // 本步骤只完成必做项，登记在册的 code_check / biz_check 仍无结论（not_run），
+  // 因此这里必须仍是 not ready——先证「只完成必做项不足以放行」。
+  assert(checklist.ready === false, '必做项完成但检查用例未执行时上线清单不应 ready', checklist.totals)
+  assert(checklist.totals.checkBlocking > 0, '检查用例未执行应计入阻塞', checklist.totals)
+  step(`上线检查：必做项完成但检查用例未跑 → ready=false（检查阻塞 ${checklist.totals.checkBlocking} 条）`)
 
   // ---------- 9. 交付门禁（需求就绪 + 测试验收 + 上线治理 + 代码推送的最终汇总） ----------
   const gate = await cli(['delivery', 'gate', String(req.id), '--scope', 'subtree'])
@@ -190,14 +194,15 @@ async function main() {
   step(`交付门禁：decision=${gate.decision}，来源 ${gate.sources.map((s) => `${s.label}=${s.status}`).join(' / ')}`)
 
   // 关键断言：本轮是开发阶段集成，尚未派发测试（PM 明确测试阶段后续另行派发），
-  // 因此交付门禁必须**正确地判定为不可交付**，且失败来源恰是「测试验收」——
-  // 需求就绪与上线治理都已通过。这证明门禁不是无脑绿灯，也证明前三段链路真的通了。
+  // 因此交付门禁必须**正确地判定为不可交付**。需求就绪已通过；
+  // 测试验收与上线治理（决策 42 后含检查用例）都因为「检查/回归用例尚无结论」而 fail——
+  // 这正是「必做项 done ≠ 可交付」的门禁语义，证明门禁不是无脑绿灯。
   assert(gate.decision === 'not_ready', '未派发测试时交付门禁应为 not_ready（不得伪造成可交付）', gate.decision)
   const byLabel = Object.fromEntries(gate.sources.map((s) => [s.key, s.status]))
   assert(byLabel.readiness === 'pass', '需求就绪来源应为 pass', byLabel)
   assert(byLabel.acceptance === 'fail', '测试验收来源应为 fail（尚无测试证据）', byLabel)
-  assert(byLabel.release === 'pass', '上线治理来源应为 pass', byLabel)
-  step('交付门禁：正确判定 not_ready——需求就绪 pass / 测试验收 fail（无证据）/ 上线治理 pass')
+  assert(byLabel.release === 'fail', '上线治理来源应为 fail（检查用例尚无结论）', byLabel)
+  step('交付门禁：正确判定 not_ready——需求就绪 pass / 测试验收 fail（无证据）/ 上线治理 fail（检查用例未跑）')
 
   const gateMd = await cliRaw(['delivery', 'gate', String(req.id), '--scope', 'subtree', '--format', 'md'])
   assert(/^# 交付门禁/m.test(gateMd), '交付门禁应可导出 markdown', gateMd.slice(0, 200))

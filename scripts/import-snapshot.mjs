@@ -93,6 +93,16 @@ try {
   // 因此分两阶段：先按计划插入全部行，把这些列留空，全部插完后再统一回填。
   const deferred = []
 
+  // 各表的 NOT NULL 列：外键指向的行不在快照里时，NOT NULL 列无法用 NULL 落库，
+  // 只能丢弃该行（见下面 dangling 判定）。
+  const notNullColumns = new Set()
+  for (const t of IMPORT_ORDER) {
+    for (const c of db.prepare(`PRAGMA table_info(${t})`).all()) {
+      if (c.notnull) notNullColumns.add(`${t}.${c.name}`)
+    }
+  }
+  const dropped = []
+
   for (const { name, fks } of PLAN) {
     const selfCols = new Set(fks.filter((f) => f.table === name).map((f) => f.column))
 
@@ -101,6 +111,17 @@ try {
       for (const fk of fks) {
         // 自引用列先留空，全部行插入完成后再回填（见下）
         row[fk.column] = selfCols.has(fk.column) ? null : mapId(fk.table, r[fk.column])
+      }
+      // 外键在快照里找不到目标行（孤儿行：数据被裁过 / 跨 schema）时：
+      // 该列 NOT NULL 的行无法落库，只能丢弃——不能用 NULL 冒充，否则要么报约束错、
+      // 要么在可空列上静默串到别的行。丢弃的行数显式汇总，不静默吞掉。
+      const dangling = fks.filter(
+        (fk) => !selfCols.has(fk.column) && r[fk.column] != null && row[fk.column] == null
+      )
+      const requiredDangling = dangling.filter((fk) => notNullColumns.has(`${name}.${fk.column}`))
+      if (requiredDangling.length) {
+        dropped.push(`${name}（${requiredDangling.map((f) => f.column).join('/')} 指向的行不在快照里）`)
+        continue
       }
       const info = insert(name, row)
       const newId = Number(info.lastInsertRowid)
@@ -133,6 +154,11 @@ try {
   if (unresolved.length) {
     console.warn(
       `[import] 警告：以下自引用关系在快照里找不到目标行，已置空（非静默处理）：${unresolved.join(', ')}。`
+    )
+  }
+  if (dropped.length) {
+    console.warn(
+      `[import] 警告：以下行因外键目标不在快照里且该列为 NOT NULL，已丢弃：${dropped.join('、')}。`
     )
   }
 
