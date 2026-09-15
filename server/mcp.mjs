@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { openDb } from './db.mjs'
 import { createStore } from './store.mjs'
 import { loadConfig, saveConfig, maskToken } from './config.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, precheckMerge, runMerge, listMergeRecords, confirmMergeRecord, abortMergeRecord, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline } from './ops.mjs'
 import { setupWorkspace, getWorkspacePrompt, cleanupWorkspace } from './ops.mjs'
 import { startAgentRun, retryAndDispatch } from './agent.mjs'
 import { resolveRepoDir, pickBranchForCommit } from './git.mjs'
@@ -684,6 +684,76 @@ export function createMcpServer({ store }) {
     mcpValidate(async ({ node, confirm, removeBranch }) => {
       const n = store.resolveRef(String(node))
       const out = await cleanupWorkspace(store, n.id, { confirm: !!confirm, removeBranch: removeBranch !== false, by: 'ai' })
+      return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] }
+    })
+  )
+
+  // ---------- 代码集成（显式合并） ----------
+
+  server.tool(
+    'merge_precheck',
+    '合并预检（merge-tree，只读）：返回各仓库将引入的变更与冲突文件，不合并、不落库、不碰工作区',
+    {
+      node: z.union([z.number(), z.string()]),
+      repo: z.string().optional()
+    },
+    mcpValidate(async ({ node, repo }) => {
+      const n = store.resolveRef(String(node))
+      const out = await precheckMerge(store, n.id, { repo: repo || null })
+      return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] }
+    })
+  )
+
+  server.tool(
+    'merge_run',
+    '显式合并回集成分支（无冲突 git merge --no-ff，不 push）；destructive，必须 confirm: true。有冲突则落 precheck_conflict 记录',
+    {
+      node: z.union([z.number(), z.string()]),
+      repo: z.string().optional(),
+      confirm: z.boolean().catch(undefined)
+    },
+    mcpValidate(async ({ node, repo, confirm }) => {
+      const n = store.resolveRef(String(node))
+      const out = await runMerge(store, n.id, { repo: repo || null, confirm: !!confirm, by: 'ai' })
+      return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] }
+    })
+  )
+
+  server.tool(
+    'merge_list',
+    '合并记录列表（含待处理冲突）；可按 node / state 筛',
+    {
+      node: z.union([z.number(), z.string()]).optional(),
+      state: z.enum(['precheck_conflict', 'merged', 'resolved', 'aborted']).optional()
+    },
+    mcpValidate(async ({ node, state }) => {
+      const nodeId = node !== undefined ? store.resolveRef(String(node)).id : null
+      const out = listMergeRecords(store, { nodeId, state: state || null })
+      return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] }
+    })
+  )
+
+  server.tool(
+    'merge_confirm',
+    '确认冲突已在本地应用完成：回填 merge_sha，状态置 resolved',
+    {
+      id: z.union([z.number(), z.string()]),
+      mergeSha: z.string().optional()
+    },
+    mcpValidate(async ({ id, mergeSha }) => {
+      const out = confirmMergeRecord(store, Number(id), { mergeSha: mergeSha || null, by: 'ai' })
+      return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] }
+    })
+  )
+
+  server.tool(
+    'merge_abort',
+    '放弃本次合并尝试：状态置 aborted，不改任何分支',
+    {
+      id: z.union([z.number(), z.string()])
+    },
+    mcpValidate(async ({ id }) => {
+      const out = abortMergeRecord(store, Number(id), { by: 'ai' })
       return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] }
     })
   )

@@ -97,10 +97,10 @@
 ### 7.11 代码集成与合并（显式）
 
 1. 工作单元（`group` / `task`）已填 `branch` / `base_branch` 并登记涉及仓库（见 §7.10）；即使未创建工作区，只要本地已存在该分支也可直接合并
-2. 「合并回子需求分支」（抽屉按钮或 `merge run`）→ 对每个相关仓库执行 `git merge-tree` 预检（内存三方合并，不碰工作区）
+2. 「合并回子需求分支」（抽屉按钮或 `merge run`）→ 对每个相关仓库执行 `git merge-tree --write-tree --name-only` 预检（内存三方合并，不碰工作区）
 3. 预检无冲突 → 在本机仓库执行 `git merge --no-ff <source_branch>`（目标为集成分支；**不 push**）→ 写 `merges` 行（`state = merged` + `merge_sha`）
 4. 预检有冲突 → 写 `merges` 行（`state = precheck_conflict` + 冲突文件），进入 §7.12
-5. **批量**：一个子需求下的多个工作单元可一键按 `sort` 顺序逐个合并，遇冲突即停并返回已完成清单
+5. 冲突处理后 `merge confirm <mergeId>` 置 `resolved` 并回填 `merge_sha`；放弃则 `merge abort <mergeId>` 置 `aborted`（不改分支）
 6. 全程只读 + 本地写；不 push、不动远端分支
 
 ### 7.12 冲突处理
@@ -118,4 +118,3 @@
 2. 点某个 commit 或文件 → `GET /api/commits/:cid/diff`（或 `GET /api/nodes/:id/diffs`）→ 文件列表 + 每文件 diff
 3. 视图：统一 / 分栏 / 全文（CodeMirror，行级高亮 + 未变行折叠）
 4. 仓库解析：`repos.local_path` → 本机 git；否则 `repos.gitlab_project` → GitLab API；都没有 → `REPO_NOT_REGISTERED`
-

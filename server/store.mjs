@@ -9,6 +9,7 @@ import { CHILD_TYPES, LEAF_TYPES } from './db.mjs'
 const ACTORS = new Set(['user', 'ai', 'cli', 'import', 'mcp'])
 const now = () => new Date().toISOString()
 const REVIEW_STATUSES = ['pending', 'approved', 'issue']
+const MERGE_STATES = ['precheck_conflict', 'merged', 'resolved', 'aborted']
 
 /**
  * scope 枚举值域。所有聚合类接口（需求就绪 / 验收报告 / 上线清单 / 交付门禁 / 上线检查派单）
@@ -1034,6 +1035,145 @@ export function createStore(db, options = {}) {
     db.prepare('DELETE FROM commits WHERE id = ?').run(commitId)
     bumpRevision()
     return { id: commitId }
+  }
+
+  // ---------- merges（显式合并尝试 / 冲突挂起 / 确认 / 放弃） ----------
+
+  function parseConflictFiles(raw) {
+    if (raw == null || raw === '') return []
+    try {
+      const value = JSON.parse(raw)
+      return Array.isArray(value) ? value : []
+    } catch {
+      return []
+    }
+  }
+
+  function mergeVO(r) {
+    return {
+      id: r.id,
+      nodeId: r.node_id,
+      repo: r.repo,
+      sourceBranch: r.source_branch,
+      targetBranch: r.target_branch,
+      baseSha: r.base_sha,
+      sourceSha: r.source_sha,
+      targetSha: r.target_sha,
+      state: r.state,
+      mergeSha: r.merge_sha,
+      conflictFiles: parseConflictFiles(r.conflict_files),
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+      createdBy: r.created_by,
+      updatedBy: r.updated_by
+    }
+  }
+
+  function assertMergeState(state) {
+    if (!MERGE_STATES.includes(state)) {
+      throw new AppError(CODES.VALIDATION_FAILED, `未知合并状态 ${state}`, { state, allowed: MERGE_STATES })
+    }
+  }
+
+  function getMerge(id) {
+    const r = db.prepare('SELECT * FROM merges WHERE id = ?').get(Number(id))
+    if (!r) throw new AppError(CODES.NOT_FOUND, `合并记录 ${id} 不存在`, { id })
+    return mergeVO(r)
+  }
+
+  function listMerges({ nodeId = null, state = null } = {}) {
+    const clauses = []
+    const args = []
+    if (nodeId != null) {
+      rawNode(nodeId)
+      clauses.push('node_id = ?')
+      args.push(Number(nodeId))
+    }
+    if (state != null) {
+      assertMergeState(state)
+      clauses.push('state = ?')
+      args.push(state)
+    }
+    const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : ''
+    return db
+      .prepare(`SELECT * FROM merges${where} ORDER BY created_at DESC, id DESC`)
+      .all(...args)
+      .map(mergeVO)
+  }
+
+  function addMerge(nodeId, {
+    repo,
+    sourceBranch,
+    targetBranch,
+    baseSha = null,
+    sourceSha = null,
+    targetSha = null,
+    state = 'merged',
+    mergeSha = null,
+    conflictFiles = null
+  } = {}, by = 'user') {
+    rawNode(nodeId)
+    if (!repo || !sourceBranch || !targetBranch) {
+      throw new AppError(CODES.VALIDATION_FAILED, '合并记录需要 repo / sourceBranch / targetBranch', {
+        repo,
+        sourceBranch,
+        targetBranch
+      })
+    }
+    assertMergeState(state)
+    const ts = now()
+    const info = db
+      .prepare(
+        `INSERT INTO merges
+         (node_id,repo,source_branch,target_branch,base_sha,source_sha,target_sha,state,merge_sha,conflict_files,created_at,updated_at,created_by,updated_by)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        nodeId,
+        String(repo),
+        String(sourceBranch),
+        String(targetBranch),
+        baseSha || null,
+        sourceSha || null,
+        targetSha || null,
+        state,
+        mergeSha || null,
+        conflictFiles ? JSON.stringify(conflictFiles) : null,
+        ts,
+        ts,
+        actor(by),
+        actor(by)
+      )
+    bumpRevision()
+    return mergeVO(db.prepare('SELECT * FROM merges WHERE id = ?').get(Number(info.lastInsertRowid)))
+  }
+
+  function confirmMerge(id, { mergeSha = null } = {}, by = 'user') {
+    const cur = db.prepare('SELECT * FROM merges WHERE id = ?').get(Number(id))
+    if (!cur) throw new AppError(CODES.NOT_FOUND, `合并记录 ${id} 不存在`, { id })
+    if (cur.state === 'aborted') {
+      throw new AppError(CODES.VALIDATION_FAILED, '已放弃的合并记录不能确认完成', { id: cur.id, state: cur.state })
+    }
+    if (mergeSha && !SHA_RE.test(String(mergeSha))) {
+      throw new AppError(CODES.VALIDATION_FAILED, 'mergeSha 必须是 7–40 位十六进制', { mergeSha })
+    }
+    const nextSha = mergeSha || cur.merge_sha || cur.target_sha || null
+    db.prepare('UPDATE merges SET state = ?, merge_sha = ?, updated_at = ?, updated_by = ? WHERE id = ?')
+      .run('resolved', nextSha, now(), actor(by), cur.id)
+    bumpRevision()
+    return mergeVO(db.prepare('SELECT * FROM merges WHERE id = ?').get(cur.id))
+  }
+
+  function abortMerge(id, by = 'user') {
+    const cur = db.prepare('SELECT * FROM merges WHERE id = ?').get(Number(id))
+    if (!cur) throw new AppError(CODES.NOT_FOUND, `合并记录 ${id} 不存在`, { id })
+    if (cur.state === 'merged') {
+      throw new AppError(CODES.VALIDATION_FAILED, '已合并的记录不能放弃', { id: cur.id, state: cur.state })
+    }
+    db.prepare('UPDATE merges SET state = ?, updated_at = ?, updated_by = ? WHERE id = ?')
+      .run('aborted', now(), actor(by), cur.id)
+    bumpRevision()
+    return mergeVO(db.prepare('SELECT * FROM merges WHERE id = ?').get(cur.id))
   }
 
   /** 更新 commit 审查结果（pending / approved / issue）；pending 时清空审者信息 */
@@ -3236,6 +3376,12 @@ export function createStore(db, options = {}) {
     listCommitsWithNode,
     findAncestorOfType,
     dedupeCommits,
+    // merges（显式合并）
+    getMerge,
+    listMerges,
+    addMerge,
+    confirmMerge,
+    abortMerge,
     // comments（diff 行级评论）
     createComment,
     listComments,

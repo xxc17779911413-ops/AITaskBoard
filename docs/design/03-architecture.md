@@ -54,6 +54,7 @@ task-board/
 - **写入**：`node upsert --path`（get-or-create，幂等）、`attr set`（单项更新）、`doc upsert`（按文档名写正文）、`batch`（多步一次调用）；均支持 `--dry-run`
 - **导入**：`import --format md` 用缩进大纲一次落成整棵子树
 - **工作区**：`unit setup` 按规则建分支 + worktree（支持多仓库）并返回开发提示词；`unit prompt` 刷新提示词；`unit cleanup` 清理（合并后默认保留）
+- **代码集成**：`merge precheck` 只读预检；`merge run --confirm` 逐仓库 `merge --no-ff` 并写 `merges` 行；冲突走 `precheck_conflict` → `merge confirm|abort`
 - **破坏性操作**：删除 / 移动需显式 `--confirm`（接口 `confirm: true`），未确认返回 400 `CONFIRM_REQUIRED`
 - **错误**：统一 `{ error: { code, message, details } }`，错误码稳定，`details` 定位到字段 / 路径
 - **并发**：SQLite WAL + `busy_timeout=5000`，Web / CLI / MCP 三方直接读写同一库
@@ -85,4 +86,3 @@ task-board/
 2. 提交前把本次 commit message 追加进所属功能的 `commit.md`，与该功能代码在同一次提交入库；跨功能的提交在每个被触碰的功能里各记一行。
 3. 新增或拆分功能时同步建目录与三份文档，并在 `features/README.md` 索引里登记。
 4. 功能粒度对齐 §2.1 的 v1 功能清单；目录清单见 `features/README.md`。
-

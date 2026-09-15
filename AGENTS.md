@@ -104,6 +104,7 @@ docs/design.md    ← 主设计文档权威副本
       commit_add · commit_remove · repo_add · repo_update · repo_remove · config_set
       upload_image
 工作区  unit_repo_list · unit_repo_add · unit_repo_remove · unit_setup · unit_prompt · unit_cleanup
+合并    merge_precheck · merge_run · merge_list · merge_confirm · merge_abort
 批量  batch · import_outline
 门禁  requirement_readiness · mindmap · delivery_gate
 设计  design_outline · design_outline_apply
@@ -137,6 +138,11 @@ unit repo add "项目A/需求1/任务1" --repo-id 1          # 登记工作单�
 unit setup "项目A/需求1/任务1" [--dry-run]              # 建分支 + worktree，返回开发提示词
 unit prompt "项目A/需求1/任务1"                         # 生成 / 刷新开发提示词（纯读）
 unit cleanup "项目A/需求1/任务1" --confirm [--keep-branch]   # 清理工作区（未并入「声明基线」的分支会保留）
+merge precheck "项目A/需求1/任务1"          # 只读预检（merge-tree，不改分支、不落库）
+merge run "项目A/需求1/任务1" --confirm     # 显式合并回集成分支（不 push）；冲突则落 precheck_conflict
+merge list --status precheck_conflict       # 待处理冲突列表
+merge confirm <mergeId> [--merge-sha <sha>] # 冲突已本地应用 → resolved + merge_sha
+merge abort <mergeId>                       # 放弃本次合并（不改分支）
 import --file outline.md --dry-run     # 大纲导入，先预演
 batch --file ops.json                  # 多步一次调用
 node delete <ref> --confirm            # 破坏性操作必须 --confirm

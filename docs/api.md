@@ -387,6 +387,15 @@ curl -s -X POST http://127.0.0.1:3210/api/nodes/9/cleanup \
 # node bin/taskboard.js unit prompt "项目A/需求1/任务1"
 # node bin/taskboard.js unit cleanup "项目A/需求1/任务1" --confirm [--keep-branch]
 # MCP: unit_setup / unit_prompt / unit_cleanup
+
+# 代码集成（显式合并）：预检 → 合并 / 冲突挂起 → 确认 / 放弃（全程不 push）
+# 预检只读：merge-tree --write-tree --name-only，不改分支、不落库
+# node bin/taskboard.js merge precheck "项目A/需求1/任务1" [--repo <名>]
+# node bin/taskboard.js merge run "项目A/需求1/任务1" --confirm [--repo <名>]
+# node bin/taskboard.js merge list --status precheck_conflict
+# node bin/taskboard.js merge confirm <mergeId> [--merge-sha <sha>]
+# node bin/taskboard.js merge abort <mergeId>
+# MCP: merge_precheck / merge_run / merge_list / merge_confirm / merge_abort
 ```
 
 分支名由 `config.branchTemplate` 渲染（默认 `{base_branch}-{slug}`，`slug` 为空退回 `n{id}`）；
@@ -406,6 +415,15 @@ HTTP / MCP 传 `removeBranch: false`、CLI 传 `--keep-branch` 可显式保留�
 | 400 | `BRANCH_NOT_FOUND` | 基线分支不存在（先确认子需求分支已建） |
 | 400 | `CONFIRM_REQUIRED` | `cleanup` 未带 `confirm: true` |
 | 400 | `VALIDATION_FAILED` | 非 `group` / `task` 节点、未登记涉及仓库、`repoId` 不在列表里 |
+
+显式合并失败语义：
+
+| HTTP | code | 场景 |
+|---|---|---|
+| 400 | `CONFIRM_REQUIRED` | `merge run` 未带 `confirm: true` |
+| 400 | `BRANCH_NOT_FOUND` | source / target 分支不存在 |
+| 400 | `REPO_PATH_MISSING` | 登记仓库没有本地路径 |
+| 200 | `MERGE_CONFLICT`（在 `conflicts[]` 中） | 预检有冲突：落 `precheck_conflict` 行 + `conflict_files`，**不改分支** |
 
 ## agent 运行时 / 会话 / 任务
 

@@ -23,7 +23,9 @@
 | 分支不存在（工作单元或集成分支） | 400 `BRANCH_NOT_FOUND` |
 | 分支已存在但基线不同 | 400 `BRANCH_EXISTS_DIFFERENT_BASE`，提示确认或改用其他分支名。**判定用 tip 相等**：分支比基线更旧（祖先）或已领先都不算一致——前者会让开发者从过期代码开工，后者含未合并成果，都不静默复用 |
 | worktree 路径已被占用 | 409 `WORKTREE_PATH_EXISTS`（被其他分支的 worktree 或同名普通目录占用；同分支同路径走幂等跳过） |
-| 合并预检有冲突 | 返回 `precheck_conflict` + 冲突文件（**不改工作区、不落分支**），进入冲突处理 |
+| 合并预检有冲突 | 返回 `precheck_conflict` + 冲突文件（**不改工作区、不落分支**），进入冲突处理。`merge-tree` exit=1 也按业务结果处理，不落成 500 |
+| 合并未确认 | 400 `CONFIRM_REQUIRED`（HTTP/MCP `confirm:true`、CLI `--confirm`）|
+| 合并记录确认 / 放弃 | `confirm` 置 `resolved`（可回填 `mergeSha`）、`abort` 置 `aborted`；已 `aborted` 不可确认、已 `merged` 不可放弃 |
 | 本机 git 不可用 / 命令失败 | 500 `GIT_UNAVAILABLE` / `GIT_FAILED`（`details` 带原始 stderr） |
 | GitLab 未配置 | 400 + 「前往设置页配置」提示 |
 | GitLab 401 / 404 | 502（`details` 区分 token 无效 / 项目路径错误） |

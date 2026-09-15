@@ -2,7 +2,7 @@ import { CODES, AppError } from './errors.mjs'
 import { CHILD_TYPES } from './db.mjs'
 import path from 'node:path'
 import { startAgentRun } from './agent.mjs'
-import { resolveRepoDir, commitDiff as gitCommitDiff, commitStat as gitCommitStat, commitTrack as gitCommitTrack, commitTime as gitCommitTime, commitMeta as gitCommitMeta, showFileAt as gitShowFileAt, commitParents as gitCommitParents, patchId as gitPatchId, mergedInCommits as gitMergedInCommits, branchesContaining as gitBranchesContaining, branchContains as gitBranchContains, mergeBranch as gitMergeBranch, previewMerge as gitPreviewMerge, branchLogShas as gitBranchLogShas, commitMetasBatch as gitCommitMetasBatch } from './git.mjs'
+import { resolveRepoDir, commitDiff as gitCommitDiff, commitStat as gitCommitStat, commitTrack as gitCommitTrack, commitTime as gitCommitTime, commitMeta as gitCommitMeta, showFileAt as gitShowFileAt, commitParents as gitCommitParents, patchId as gitPatchId, mergedInCommits as gitMergedInCommits, branchesContaining as gitBranchesContaining, branchContains as gitBranchContains, mergeBranch as gitMergeBranch, previewMerge as gitPreviewMerge, revParse as gitRevParse, mergeBase as gitMergeBase, branchLogShas as gitBranchLogShas, commitMetasBatch as gitCommitMetasBatch } from './git.mjs'
 import { addWorktree as gitAddWorktree, removeWorktree as gitRemoveWorktree, deleteLocalBranch as gitDeleteLocalBranch, checkWorktreePlan as gitCheckWorktreePlan } from './git.mjs'
 import { loadConfig } from './config.mjs'
 
@@ -91,6 +91,11 @@ export const TOOLS = [
   'unit_setup',
   'unit_prompt',
   'unit_cleanup',
+  'merge_precheck',
+  'merge_run',
+  'merge_list',
+  'merge_confirm',
+  'merge_abort',
   'import_outline',
   'batch',
   'config_get',
@@ -1502,6 +1507,7 @@ export async function cleanupWorkspace(store, nodeRef, { confirm = false, remove
       // 传入声明基线：删除判定必须相对基线，而不是当前 HEAD（D2）
       const del = await gitDeleteLocalBranch(dir, branchName, { baseBranch: base })
       out.branchRemoved = !!del.ok && !!del.removed
+      out.branchAlreadyRemoved = !!del.alreadyRemoved
       if (!del.ok) out.branchNote = del.reason
     } else if (!removeBranch) {
       // 显式保留分支：如实回报「没删」，避免调用方把 undefined 当成未知
@@ -1517,7 +1523,12 @@ export async function cleanupWorkspace(store, nodeRef, { confirm = false, remove
       const ur = store.listUnitRepos(node.id).find((u) => u.repoId === r.repoId)
       if (ur) store.updateUnitRepo(ur.id, { worktreePath: null })
     }
-    if (attrs.branch) store.setAttrs(node.id, { branch: '' }, by)
+    // N1 回归点：只有「分支确实已不存在」时才清空 attrs.branch。
+    // `--keep-branch` / `removeBranch:false`，以及「未并入基线而保守保留」的分支，
+    // 都必须保留该属性；否则工具侧会取不到分支名、后续 cleanup 无法管理，prompt 也会算出错误分支。
+    const branchGoneEverywhere =
+      results.length > 0 && results.every((r) => r.branchRemoved === true || r.branchAlreadyRemoved === true)
+    if (removeBranch && attrs.branch && branchGoneEverywhere) store.setAttrs(node.id, { branch: '' }, by)
   })
   store.bumpRevision()
 
@@ -1529,6 +1540,278 @@ export async function cleanupWorkspace(store, nodeRef, { confirm = false, remove
     removed: results.filter((r) => r.worktreeRemoved || r.worktreeAlreadyRemoved).length,
     results
   }
+}
+
+/**
+ * 解析「显式合并」的参与仓库与分支。
+ * 与工作区准备共用 resolveBaseBranch()：显式 base_branch > 工作单元 base_branch > 子需求 branch。
+ * `repoNames` 可显式收窄到某个仓库；未登记 local_path / 分支缺失时在调用侧变成稳定错误或逐项结果。
+ */
+function resolveMergeTargets(store, nodeRef, { repo = null } = {}) {
+  const unit = assertUnit(store, nodeRef)
+  const attrs = store.getAttrs(unit.id) || {}
+  const sourceBranch = attrs.branch || null
+  if (!sourceBranch) {
+    throw new AppError(CODES.VALIDATION_FAILED, '当前工作单元未填工作分支（先 unit setup 或 attr set branch）', {
+      node: unit.name,
+      field: 'branch'
+    })
+  }
+  const targetBranch = resolveBaseBranch(store, unit, attrs.base_branch || null)
+  if (!targetBranch) {
+    throw new AppError(CODES.VALIDATION_FAILED, '未配置集成分支（请填工作单元 base_branch 或所属子需求 branch）', {
+      node: unit.name
+    })
+  }
+  let repos = store.listUnitRepos(unit.id)
+  if (repo) repos = repos.filter((u) => u.repoName === repo)
+  if (repos.length === 0) {
+    throw new AppError(CODES.VALIDATION_FAILED, repo ? `该工作单元未登记仓库 ${repo}` : '该工作单元尚未登记涉及仓库', {
+      node: unit.name,
+      repo
+    })
+  }
+  const targets = []
+  for (const ur of repos) {
+    const repoRow = store.listRepos().find((r) => r.id === ur.repoId)
+    if (!repoRow || !repoRow.localPath) {
+      targets.push({ ur, repoRow, ok: false, reason: 'no_local_path', repo: ur.repoName })
+      continue
+    }
+    let dir
+    try {
+      dir = resolveRepoDir(repoRow)
+    } catch (e) {
+      targets.push({ ur, repoRow, ok: false, reason: 'repo-path-missing', repo: ur.repoName, message: e.message })
+      continue
+    }
+    targets.push({ ur, repoRow, dir, ok: true, repo: repoRow.name })
+  }
+  return { unit, sourceBranch, targetBranch, targets }
+}
+
+/**
+ * 合并预检（只读，不落库、不合并）。
+ * 对每个涉及仓库执行 `git merge-tree --write-tree <target> <source>`，返回将引入的变更与冲突文件；
+ * 不碰工作区、不建 merge commit、不改任何分支——这是「先预检后合并」的安全边界。
+ */
+export async function precheckMerge(store, nodeRef, { repo = null } = {}) {
+  const { unit, sourceBranch, targetBranch, targets } = resolveMergeTargets(store, nodeRef, { repo })
+  const items = []
+  for (const t of targets) {
+    if (!t.ok) {
+      items.push({ repo: t.repo, source: sourceBranch, target: targetBranch, ok: false, reason: t.reason, message: t.message || null })
+      continue
+    }
+    const sourceSha = await gitRevParse(t.dir, sourceBranch)
+    const targetSha = await gitRevParse(t.dir, targetBranch)
+    if (!sourceSha) {
+      items.push({ repo: t.repo, source: sourceBranch, target: targetBranch, ok: false, reason: 'source-not-found' })
+      continue
+    }
+    if (!targetSha) {
+      items.push({ repo: t.repo, source: sourceBranch, target: targetBranch, ok: false, reason: 'target-not-found' })
+      continue
+    }
+    const pv = await gitPreviewMerge(t.dir, sourceBranch, targetBranch)
+    items.push({
+      repo: t.repo,
+      source: sourceBranch,
+      target: targetBranch,
+      ok: true,
+      baseSha: await gitMergeBase(t.dir, sourceBranch, targetBranch),
+      sourceSha,
+      targetSha,
+      ...pv
+    })
+  }
+  return {
+    node: { id: unit.id, name: unit.name, path: unit.path },
+    sourceBranch,
+    targetBranch,
+    conflicted: items.some((i) => i.conflicted === true),
+    items
+  }
+}
+
+/**
+ * 显式合并（破坏性，需 confirm）：逐仓库预检，无冲突则 `git merge --no-ff` 并写 merges 行；
+ * 有冲突则写 `state='precheck_conflict'` 的行并把 merge-tree 冲突文件 JSON 落库（不碰分支）。
+ *
+ * 失败语义：
+ * - `confirm:false` → CONFIRM_REQUIRED（与 cleanup 同口径）
+ * - 分支缺失 → BRANCH_NOT_FOUND
+ * - 仓库无本地路径 → REPO_PATH_MISSING / 逐项 no_local_path
+ * - 冲突 → 不抛错，返回 `conflicts[]` + 落库行，让调用方进入冲突处理
+ */
+export async function runMerge(store, nodeRef, { repo = null, confirm = false, dryRun = false, by = 'user' } = {}) {
+  if (!confirm && !dryRun) {
+    throw new AppError(CODES.CONFIRM_REQUIRED, '合并会改写本机集成分支，需 confirm（HTTP/MCP confirm:true，CLI --confirm）', {})
+  }
+  const { unit, sourceBranch, targetBranch, targets } = resolveMergeTargets(store, nodeRef, { repo })
+  const prechecked = []
+  for (const t of targets) {
+    if (!t.ok) {
+      prechecked.push({ ...t, precheck: { ok: false, reason: t.reason, message: t.message || null } })
+      continue
+    }
+    const sourceSha = await gitRevParse(t.dir, sourceBranch)
+    const targetSha = await gitRevParse(t.dir, targetBranch)
+    if (!sourceSha) {
+      prechecked.push({ ...t, precheck: { ok: false, reason: 'source-not-found' } })
+      continue
+    }
+    if (!targetSha) {
+      prechecked.push({ ...t, precheck: { ok: false, reason: 'target-not-found' } })
+      continue
+    }
+    const pv = await gitPreviewMerge(t.dir, sourceBranch, targetBranch)
+    prechecked.push({ ...t, sourceSha, targetSha, precheck: { ok: true, ...pv } })
+  }
+
+  if (dryRun) {
+    return {
+      dryRun: true,
+      node: { id: unit.id, name: unit.name, path: unit.path },
+      sourceBranch,
+      targetBranch,
+      merged: [],
+      conflicts: prechecked
+        .filter((t) => t.precheck && t.precheck.conflicted)
+        .map((t) => ({ repo: t.repo, source: sourceBranch, target: targetBranch, ok: false, conflictFiles: t.precheck.conflictFiles })),
+      items: prechecked.map((t) => ({
+        repo: t.repo,
+        source: sourceBranch,
+        target: targetBranch,
+        ok: t.precheck?.ok === true,
+        reason: t.precheck?.reason || null,
+        conflicted: !!t.precheck?.conflicted,
+        conflictFiles: t.precheck?.conflictFiles || []
+      }))
+    }
+  }
+
+  const merged = []
+  const conflicts = []
+  const failed = []
+  for (const t of prechecked) {
+    if (!t.precheck || !t.precheck.ok) {
+      const reason = t.precheck?.reason || 'unknown'
+      if (['source-not-found', 'target-not-found'].includes(reason)) {
+        failed.push({ repo: t.repo, source: sourceBranch, target: targetBranch, ok: false, reason, code: CODES.BRANCH_NOT_FOUND })
+      } else {
+        failed.push({ repo: t.repo, source: sourceBranch, target: targetBranch, ok: false, reason })
+      }
+      continue
+    }
+    if (t.precheck.conflicted) {
+      const row = store.addMerge(
+        unit.id,
+        {
+          repo: t.repo,
+          sourceBranch,
+          targetBranch,
+          sourceSha: t.sourceSha,
+          targetSha: t.targetSha,
+          state: 'precheck_conflict',
+          conflictFiles: t.precheck.conflictFiles
+        },
+        by
+      )
+      conflicts.push({ ...row, code: CODES.MERGE_CONFLICT, conflictFiles: t.precheck.conflictFiles, willIntroduce: t.precheck.willIntroduce })
+      continue
+    }
+    const result = await gitMergeBranch(t.dir, sourceBranch, targetBranch, `merge: ${sourceBranch} -> ${targetBranch}（task-board 显式合并）`)
+    if (result.ok && result.alreadyMerged) {
+      const row = store.addMerge(
+        unit.id,
+        {
+          repo: t.repo,
+          sourceBranch,
+          targetBranch,
+          sourceSha: t.sourceSha,
+          targetSha: t.targetSha,
+          state: 'merged',
+          mergeSha: await gitRevParse(t.dir, targetBranch)
+        },
+        by
+      )
+      merged.push({ ...row, alreadyMerged: true })
+      continue
+    }
+    if (result.ok) {
+      const row = store.addMerge(
+        unit.id,
+        {
+          repo: t.repo,
+          sourceBranch,
+          targetBranch,
+          sourceSha: t.sourceSha,
+          targetSha: t.targetSha,
+          state: 'merged',
+          mergeSha: result.mergeSha
+        },
+        by
+      )
+      merged.push({ ...row, message: result.message || null })
+      continue
+    }
+    if (result.conflict) {
+      const row = store.addMerge(
+        unit.id,
+        {
+          repo: t.repo,
+          sourceBranch,
+          targetBranch,
+          sourceSha: t.sourceSha,
+          targetSha: t.targetSha,
+          state: 'precheck_conflict',
+          conflictFiles: t.precheck.conflictFiles
+        },
+        by
+      )
+      conflicts.push({ ...row, code: CODES.MERGE_CONFLICT, reason: result.reason, message: result.message || null })
+      continue
+    }
+    failed.push({ repo: t.repo, source: sourceBranch, target: targetBranch, ok: false, reason: result.reason, message: result.message || null })
+  }
+
+  if (failed.length && merged.length === 0 && conflicts.length === 0) {
+    const first = failed[0]
+    const code = first.code || (first.reason === 'no_local_path' ? CODES.REPO_PATH_MISSING : CODES.GIT_FAILED)
+    const message =
+      code === CODES.BRANCH_NOT_FOUND
+        ? `分支不存在（source=${sourceBranch} / target=${targetBranch}）`
+        : code === CODES.REPO_PATH_MISSING
+          ? `仓库 ${first.repo} 未登记本地路径`
+          : `合并失败：${first.repo}`
+    throw new AppError(code, message, { sourceBranch, targetBranch, results: failed })
+  }
+
+  return {
+    dryRun: false,
+    node: { id: unit.id, name: unit.name, path: unit.path },
+    sourceBranch,
+    targetBranch,
+    merged,
+    conflicts,
+    failed
+  }
+}
+
+/** 合并记录列表：?nodeId=&state= */
+export function listMergeRecords(store, { nodeId = null, state = null } = {}) {
+  return { items: store.listMerges({ nodeId, state }) }
+}
+
+/** 确认冲突已在本地应用完成：回填 merge_sha，状态置 resolved */
+export function confirmMergeRecord(store, mergeId, { mergeSha = null, by = 'user' } = {}) {
+  return store.confirmMerge(mergeId, { mergeSha }, by)
+}
+
+/** 放弃本次合并尝试：状态置 aborted（不改任何分支） */
+export function abortMergeRecord(store, mergeId, { by = 'user' } = {}) {
+  return store.abortMerge(mergeId, by)
 }
 
 /**

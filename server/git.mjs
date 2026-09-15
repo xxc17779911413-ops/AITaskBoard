@@ -39,7 +39,12 @@ async function gitTry(dir, args) {
     if (e && e.code === 'ENOENT') {
       throw new AppError(CODES.GIT_UNAVAILABLE, '本机 git 不可用（命令不存在）')
     }
-    return { ok: false, code: typeof e.code === 'number' ? e.code : 1, stderr: String((e && (e.stderr || e.message)) || '') }
+    return {
+      ok: false,
+      code: typeof e.code === 'number' ? e.code : 1,
+      stdout: String((e && e.stdout) || ''),
+      stderr: String((e && (e.stderr || e.message)) || '')
+    }
   }
 }
 
@@ -359,14 +364,27 @@ export async function previewMerge(dir, source, target) {
       }
     }
   }
-  const mt = await gitTry(dir, ['merge-tree', '--write-tree', target, source])
+  // 用 --name-only：Git 2.39+ 的裸 --write-tree 会输出 stage 行（含 oid/mode），
+  // 直接当文件名落库会把「100644 <sha> 1\tpath」整行写进 conflict_files。
+  const mt = await gitTry(dir, ['merge-tree', '--write-tree', '--name-only', target, source])
   let conflicted = false
   const conflictFiles = []
-  if (mt.ok && mt.code !== 0) {
+  // gitTry 以退出码非 0 返回 ok:false；`merge-tree` 有冲突时正是 exit=1，
+  // 旧判定 `mt.ok && mt.code !== 0` 因此永远拿不到冲突文件清单。
+  const output = String(mt.stdout || '').trim()
+  if (!mt.ok && mt.code !== 0 && output) {
     conflicted = true
-    for (const line of String(mt.stdout || '').split('\n').slice(1)) {
+    for (const line of output.split('\n').slice(1)) {
       const t = line.trim()
-      if (t) conflictFiles.push(t.replace(/\x00.*$/, ''))
+      if (!t) continue
+      // stdout 末尾会混入 "Auto-merging ..." / "CONFLICT ..." 的人类可读信息；
+      // 冲突文件清单只保留真正的路径行（stage 行即使未加 --name-only 也不会误收）。
+      if (/^(Auto-merging|CONFLICT|CONFLICT \()/i.test(t)) continue
+      if (/^\d{6} [0-9a-f]+ [123]\t/.test(t)) {
+        conflictFiles.push(t.split('\t').slice(1).join('\t').replace(/\x00.*$/, ''))
+        continue
+      }
+      conflictFiles.push(t.replace(/\x00.*$/, ''))
     }
   }
   return {
@@ -527,6 +545,13 @@ export async function revParse(dir, ref) {
 export async function localBranchSha(dir, branch) {
   if (!branch) return null
   const r = await gitTry(dir, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])
+  return r.ok && r.stdout.trim() ? r.stdout.trim() : null
+}
+
+/** 两个 ref 的 merge-base sha；无共同祖先或 ref 缺失时返回 null */
+export async function mergeBase(dir, a, b) {
+  if (!a || !b) return null
+  const r = await gitTry(dir, ['merge-base', a, b])
   return r.ok && r.stdout.trim() ? r.stdout.trim() : null
 }
 

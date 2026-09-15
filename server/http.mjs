@@ -1,7 +1,7 @@
 import express from 'express'
 import fs from 'node:fs'
 import { AppError, CODES } from './errors.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, approveAndMerge, getMergeStatus, previewMerges, mergeUpstream, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, approveAndMerge, getMergeStatus, previewMerges, mergeUpstream, precheckMerge, runMerge, listMergeRecords, confirmMergeRecord, abortMergeRecord, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline } from './ops.mjs'
 import { setupWorkspace, getWorkspacePrompt, cleanupWorkspace } from './ops.mjs'
 import { startAgentRun, retryAndDispatch } from './agent.mjs'
 import { resolveRepoDir, pickBranchForCommit } from './git.mjs'
@@ -428,6 +428,51 @@ export function createApp({ store }) {
     '/api/nodes/:id/tracks',
     wrap(async (req, res) => res.json(await getNodeTracks(store, refOf(req), { scope: req.query.scope, branches: req.query.branches === 'true', light: req.query.light === 'true' })))
   )
+  // ---------- 代码集成（显式合并：预检 → 合并 / 冲突挂起 → 确认 / 放弃） ----------
+  app.post(
+    '/api/nodes/:id/merges/precheck',
+    wrap(async (req, res) => {
+      const node = store.resolveRef(refOf(req))
+      const b = req.body || {}
+      res.json(await precheckMerge(store, node.id, { repo: b.repo || null }))
+    })
+  )
+  app.post(
+    '/api/nodes/:id/merges',
+    wrap(async (req, res) => {
+      const node = store.resolveRef(refOf(req))
+      const b = req.body || {}
+      res.json(
+        await runMerge(store, node.id, {
+          repo: b.repo || null,
+          confirm: !!b.confirm,
+          dryRun: !!b.dryRun,
+          by: actorOf(req)
+        })
+      )
+    })
+  )
+  app.get(
+    '/api/merges',
+    wrap((req, res) => {
+      const nodeId = req.query.nodeId ? store.resolveRef(String(req.query.nodeId)).id : null
+      res.json(listMergeRecords(store, { nodeId, state: req.query.state || null }))
+    })
+  )
+  app.post(
+    '/api/merges/:mid/confirm',
+    wrap((req, res) => {
+      const b = req.body || {}
+      res.json(confirmMergeRecord(store, Number(req.params.mid), { mergeSha: b.mergeSha || null, by: actorOf(req) }))
+    })
+  )
+  app.post(
+    '/api/merges/:mid/abort',
+    wrap((req, res) => {
+      res.json(abortMergeRecord(store, Number(req.params.mid), { by: actorOf(req) }))
+    })
+  )
+
   // ---------- 审批合并（同意 → 开发分支合入所属子需求的「需求分支」；主仓库执行） ----------
   app.post(
     '/api/nodes/:id/merge',

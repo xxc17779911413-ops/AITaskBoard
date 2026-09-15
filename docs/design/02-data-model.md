@@ -240,6 +240,7 @@ v1 中所有属性值均由用户编辑；系统自动写入的数据只有 MR �
 | created_by / updated_by | TEXT | 操作者：`user` / `ai` / `cli` / `import` |
 
 约束：一次「合并回集成分支」按仓库各产生一行；`state = precheck_conflict` 的行即待处理冲突，处理完成后置 `resolved` 并回填 `merge_sha`。
+成功合并置 `merged`；显式放弃置 `aborted`。`conflict_files` 存 `merge-tree` 解出的文件路径数组（JSON）。
 
 ### 4.12 unit_repos（工作单元 × 仓库）
 
