@@ -111,6 +111,7 @@ docs/design.md    ← 主设计文档权威副本
 门禁  requirement_readiness · secret_scan · delivery_gate
 门禁  requirement_readiness · delivery_gate
       交付快照 delivery_snapshot_capture · delivery_snapshot_list · delivery_snapshot_get
+门禁  requirement_readiness · code_audit · delivery_gate
 回归  test_case_list · test_case_upsert · test_case_update · test_case_remove · test_case_reorder
       test_run · test_report_list · test_report_get · test_report_finish · acceptance_report
       acceptance_status · acceptance_sign
@@ -164,6 +165,7 @@ mindmap "项目A/需求1" [--scope subtree] [--max-depth N] [--format md]  # 思
 design outline "项目A/需求1" [--scope subtree] [--format md]   # 概要设计大纲 / 思维导图（从需求树推导骨架）
 design apply "项目A/需求1" [--scope subtree] [--overwrite]     # 写入「概要设计」文档（默认不覆盖已填写内容）
 secret scan "项目A/需求1" [--scope subtree] [--format md]      # 文档敏感信息扫描（只读，命中值脱敏）
+code audit "项目A/需求1" [--scope subtree] [--format md]       # 代码检查（已登记提交新增行的只读静态审查）
 delivery gate "项目A/需求1" [--scope subtree] [--format md]    # 交付门禁（需求就绪 + 测试验收 + 上线治理的最终汇总）
 delivery snapshot "项目A/需求1" [--note 备注]                  # 冻结当前交付证据（完整依据 + 指纹）
 delivery snapshots "项目A/需求1" [--scope subtree]             # 快照列表（current / drifted）

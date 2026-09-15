@@ -750,6 +750,30 @@ curl -s 'http://127.0.0.1:3210/api/delivery-snapshots/1?format=md'
 > `drifted` **不会改写冻结结论**：它只表示当时的证据已与现状不同。
 > 验收 / 上线审计应同时看「冻结结论」与「当前核对」，不能拿快照冒充实时门禁。
 
+## 代码检查（已登记提交新增行的只读静态审查）
+
+```bash
+# 对本节点已登记提交的新增行做静态审查（冲突标记 / 私钥 / 硬编码凭据 / eval / 聚焦测试 / 调试遗留）
+curl -s http://127.0.0.1:3210/api/nodes/1/code-audit
+
+# 连子树的登记提交一起审查
+curl -s 'http://127.0.0.1:3210/api/nodes/1/code-audit?scope=subtree'
+
+# markdown 可直接贴进评审记录 / MR 描述
+curl -s 'http://127.0.0.1:3210/api/nodes/1/code-audit?format=md'
+
+# CLI / MCP 等价入口
+# node bin/taskboard.js code audit "项目A/需求1" [--scope self|subtree] [--format json|md]
+# MCP: code_audit { node, scope?, format? }
+```
+
+> 只取 `git show --unified=0` 的**新增行**，不把历史遗留代码算到本次改动头上。
+> `danger`（不可逆 / 会静默吞掉验证）阻塞 `ready=false`；`warn` 只提示，不影响结论。
+> `ready=null` 表示「没有可审查的新增行 / 有提交读不到 / 扫描被截断」——看不到 ≠ 通过；
+> 命中硬编码凭据时证据**先脱敏再截断**，任何输出都不回显原值。
+> 单条提交读取失败（仓库未登记 / 路径无效 / sha 不存在）记在 `items[].error`，不拖垮整体。
+> 纯读、不 fetch、不落表、不动 revision。
+
 ## 错误码速查
 
 | HTTP | code | 场景 |

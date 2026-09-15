@@ -5,6 +5,8 @@ import { startAgentRun } from './agent.mjs'
 import { resolveRepoDir, commitDiff as gitCommitDiff, commitStat as gitCommitStat, commitTrack as gitCommitTrack, commitTime as gitCommitTime, commitMeta as gitCommitMeta, showFileAt as gitShowFileAt, commitParents as gitCommitParents, patchId as gitPatchId, mergedInCommits as gitMergedInCommits, branchesContaining as gitBranchesContaining, branchContains as gitBranchContains, mergeBranch as gitMergeBranch, previewMerge as gitPreviewMerge, branchLogShas as gitBranchLogShas, commitMetasBatch as gitCommitMetasBatch } from './git.mjs'
 import { addWorktree as gitAddWorktree, removeWorktree as gitRemoveWorktree, deleteLocalBranch as gitDeleteLocalBranch, checkWorktreePlan as gitCheckWorktreePlan } from './git.mjs'
 import { loadConfig } from './config.mjs'
+import { commitAddedLines as gitCommitAddedLines } from './git.mjs'
+import { auditAddedLines, summarizeCodeAudit } from './code-audit.mjs'
 
 /** 能力清单：MCP 工具 / CLI 命令 / REST 路由 三者 1:1 对应 */
 export const TOOLS = [
@@ -60,6 +62,7 @@ export const TOOLS = [
   'design_outline_apply',
   'mindmap',
   'secret_scan',
+  'code_audit',
   'delivery_gate',
   'delivery_snapshot_capture',
   'delivery_snapshot_list',
@@ -1137,6 +1140,117 @@ export function renderTestReportMd(store, report) {
       : '- agent 任务：未关联'
   )
   lines.push('', '## 摘要', '', report.summary || '—', '', '## 详情', '', report.detail || '—')
+  return lines.join('\n')
+}
+
+/**
+ * 单次代码检查最多扫描的提交数。超过即截断并把结论降级为「无法判定」：
+ * 每次读新增行都要起一个 git 子进程，子树很大时限制住开销；
+ * 更重要的是——没扫完就报「通过」是假绿灯，必须让调用方看到 `totals.truncated`。
+ */
+const CODE_AUDIT_MAX_COMMITS = 200
+
+/**
+ * 代码检查（code audit）：对节点（含可选子树）已登记提交的**新增代码行**做只读静态审查。
+ *
+ * 与 getNodeDiffs 的差别：diff 预览给人看全量变更，本函数只挑新增行喂给规则引擎，
+ * 产出一个「这次改动有没有引入高风险写法」的确定结论（可进交付门禁 / 贴进评审记录）。
+ *
+ * 读不到的单条提交不拖垮整体：repo 未登记 / 路径无效 / sha 不存在都记进 `item.error`
+ * 并由 summarizeCodeAudit 折算成 `ready=null`（看不到 ≠ 没问题）。
+ * 纯读、不 fetch、不落表、不动 revision。
+ */
+export async function getNodeCodeAudit(store, nodeRef, { scope = 'self' } = {}) {
+  const node = store.resolveRef(nodeRef)
+  const effectiveScope = store.normalizeScope(scope)
+  const allCommits = store.listCommits(node.id, { subtree: effectiveScope === 'subtree' })
+  const truncated = allCommits.length > CODE_AUDIT_MAX_COMMITS
+  const commits = truncated ? allCommits.slice(0, CODE_AUDIT_MAX_COMMITS) : allCommits
+  const repos = new Map(store.listRepos().map((r) => [r.name, r]))
+  const items = []
+  const byKey = new Map()
+
+  for (const c of commits) {
+    const key = `${c.repo || ''}@${c.sha}`
+    const existing = byKey.get(key)
+    if (existing) {
+      existing.sourceNodes.push({ nodeId: c.nodeId, path: store.getNode(c.nodeId).path })
+      continue
+    }
+    const item = {
+      commit: c,
+      sourceNodes: [{ nodeId: c.nodeId, path: store.getNode(c.nodeId).path }],
+      repo: null,
+      addedLines: 0,
+      files: [],
+      findings: [],
+      error: null
+    }
+    byKey.set(key, item)
+    items.push(item)
+    const repo = c.repo ? repos.get(c.repo) : null
+    try {
+      if (!repo) {
+        throw new AppError(
+          CODES.REPO_NOT_REGISTERED,
+          c.repo ? `仓库 ${c.repo} 未登记（先 repo add）` : '该提交未标注仓库'
+        )
+      }
+      const dir = resolveRepoDir(repo)
+      item.repo = { name: repo.name, localPath: repo.localPath }
+      const entries = await gitCommitAddedLines(dir, c.sha)
+      const byFile = new Map()
+      for (const e of entries) {
+        if (!byFile.has(e.path)) byFile.set(e.path, { path: e.path, addedLines: 0 })
+        byFile.get(e.path).addedLines += 1
+      }
+      item.files = Array.from(byFile.values())
+      item.addedLines = entries.length
+      item.findings = auditAddedLines(entries)
+    } catch (e) {
+      // 单条失败不拖垮整体：记错误码与真实信息，汇总层据此拒绝给出绿灯
+      item.error = { code: e.code || 'ERROR', message: e.message }
+    }
+  }
+
+  return summarizeCodeAudit({ node, scope: effectiveScope, items, truncated })
+}
+
+/**
+ * 代码检查导出：把 getNodeCodeAudit 的结论渲染成可贴进评审 / MR 的 markdown。
+ * 与 renderAcceptanceMd / renderReadinessMd / renderDeliveryGateMd 同风格。
+ *
+ * 表格单元格必须先转义反斜杠再转义竖线，否则含 `|` 或结尾 `\` 的代码片段会把表格切歪
+ * （与 renderDeliveryGateMd.cell() 同一坑，独立测试曾实测）。
+ */
+export function renderCodeAuditMd(audit) {
+  const t = audit.totals
+  const cell = (v) => String(v == null ? '' : v).replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ')
+  const lines = [
+    `# 代码检查：${audit.node.name}`,
+    '',
+    `- 范围：${audit.scope === 'subtree' ? '含子树' : '仅本节点'}`,
+    `- 提交：${t.commits} · 文件：${t.files} · 新增行：${t.addedLines} · 命中：${t.findings}（高危 ${t.danger} / 提示 ${t.warn}）`,
+    `- 结论：${audit.ready == null ? '无法判定（没有可审查的新增行，或有提交读不到）' : audit.ready ? '通过' : '未通过'}`,
+    ''
+  ]
+  if (t.truncated) {
+    lines.push(`> 提交数超过单次扫描上限，仅扫描了前若干条，结论按「无法判定」处理。`, '')
+  }
+  if (t.errors > 0) {
+    lines.push(`> 有 ${t.errors} 条提交读取失败（仓库未登记 / 路径无效 / sha 不存在），结论按「无法判定」处理。`, '')
+  }
+  if (audit.findings.length === 0) {
+    lines.push('未发现问题。')
+    return lines.join('\n')
+  }
+  lines.push('| 级别 | 规则 | 位置 | 片段 | 建议 |', '|---|---|---|---|---|')
+  for (const f of audit.findings) {
+    const level = f.severity === 'danger' ? '高危' : '提示'
+    lines.push(
+      `| ${level} | ${cell(f.title)} | ${cell(`${f.path}:${f.line}`)} | ${cell(f.snippet)} | ${cell(f.suggestion)} |`
+    )
+  }
   return lines.join('\n')
 }
 

@@ -672,3 +672,56 @@ export async function deleteLocalBranch(dir, branch, { baseBranch = null } = {})
   if (!r.ok) return { ok: false, reason: 'branch-delete-failed', message: String(r.stderr || '').slice(0, 1000) }
   return { ok: true, removed: true, branch, baseBranch }
 }
+
+/**
+ * 取单个 commit 的**新增行**（代码检查用）。
+ *
+ * 只解析 `git show` 的 patch 体，提取 `+` 开头且不是 `+++` 的行，并记录新文件侧行号：
+ * - 代码检查关心「本次改动引入了什么」，扫新增行即可；旧行属历史遗留，不该由本次交付负责。
+ * - `--no-color` 确保不会把 ANSI 色码带进匹配文本；`--unified=0` 让 hunk 头的行号可直接
+ *   推出每条新增行的新文件行号（`@@ -a,b +c,d @@` 的 `c` 就是下一条新增行的起点）。
+ * - 二进制文件不产出 patch 行，自然被跳过。
+ * - `--no-renames` 与 commitDiff 保持一致，避免改名被拆成删除 + 新增两段。
+ *
+ * 返回 [{ path, line, text }]（text 已去掉行首的 `+`，保留原始缩进）。
+ */
+export async function commitAddedLines(dir, sha) {
+  const out = await git(dir, ['show', sha, '--format=', '--no-renames', '--no-color', '--unified=0'])
+  const entries = []
+  let curPath = null
+  let nextLine = null
+  for (const raw of out.split('\n')) {
+    if (raw.startsWith('diff --git ')) {
+      curPath = null
+      nextLine = null
+      const m = /^diff --git a\/(.+?) b\/(.+)$/.exec(raw)
+      if (m) curPath = m[2]
+      continue
+    }
+    if (raw.startsWith('+++ ')) {
+      // `+++ /dev/null` 表示文件被删除：没有新增行可扫，丢弃该文件段
+      const p = raw.slice(4).trim()
+      curPath = p === '/dev/null' ? null : p.replace(/^b\//, '')
+      continue
+    }
+    if (raw.startsWith('@@')) {
+      const m = /^@@ \-\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw)
+      nextLine = m ? Number(m[1]) : null
+      continue
+    }
+    if (curPath == null || nextLine == null) continue
+    // 新增行：`+` 开头且不是 `+++`（已在上面消费）；其余前缀（- / 空格 / \）推进或忽略
+    if (raw.startsWith('+')) {
+      entries.push({ path: curPath, line: nextLine, text: raw.slice(1) })
+      nextLine += 1
+      continue
+    }
+    if (raw.startsWith(' ')) {
+      nextLine += 1
+      continue
+    }
+    if (raw.startsWith('\\')) continue // "\ No newline at end of file"
+    // 其余（如 `-` 删除行 / 空行分隔）不推进新增行号
+  }
+  return entries
+}

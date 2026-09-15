@@ -89,6 +89,9 @@ export default {
   deliverySnapshots: (nodeId, scope) =>
     api(`/nodes/${nodeId}/delivery-snapshots${scope ? `?scope=${encodeURIComponent(scope)}` : ''}`),
 
+  // 代码检查（已登记提交新增行的只读静态审查）
+  codeAudit: (nodeId, scope) => api(`/nodes/${nodeId}/code-audit?scope=${scope || 'self'}`),
+
   // commit
   commitList: (nodeId, subtree) => api(`/nodes/${nodeId}/commits${subtree ? '?subtree=true' : ''}`),
   commitAdd: (nodeId, data) => api(`/nodes/${nodeId}/commits`, { method: 'POST', body: JSON.stringify(data) }),

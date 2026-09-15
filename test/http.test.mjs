@@ -1,6 +1,28 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { tempHome } from './helpers.mjs'
+
+/** 临时 git 仓库 + 一个含高危硬编码凭据新增行的提交（代码检查用例共用） */
+function makeAuditRepo() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'taskboard-codeaudit-http-'))
+  const dir = path.join(root, 'work')
+  fs.mkdirSync(dir)
+  const g = (args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' })
+  g(['init', '-q', '-b', 'main'])
+  g(['config', 'user.email', 't@t.local'])
+  g(['config', 'user.name', 't'])
+  fs.writeFileSync(path.join(dir, 'base.js'), 'export const a = 1\n')
+  g(['add', '.'])
+  g(['commit', '-q', '-m', 'init'])
+  fs.writeFileSync(path.join(dir, 'x.js'), 'const token = "abcdefghijkl"\n')
+  g(['add', '.'])
+  g(['commit', '-q', '-m', 'risky'])
+  return { root, dir, sha: g(['rev-parse', 'HEAD']).trim() }
+}
 
 async function setup() {
   const tmp = await tempHome()
@@ -783,6 +805,38 @@ test('就绪门禁：scope=subtree 汇总 + md 输出', async () => {
   assert.ok(md.includes('阻塞项'))
   await close()
   tmp.cleanup()
+})
+
+test('代码检查：端到端（登记提交 → 命中高危 → md）', async () => {
+  const { tmp, post, get, base, close } = await setup()
+  const repo = makeAuditRepo()
+  try {
+    const p = await post('/api/nodes', { type: 'project', name: 'P' })
+    const r = await post('/api/nodes', { parentId: p.id, type: 'requirement', name: 'R' })
+    await post('/api/repos', { name: 'demo', localPath: repo.dir })
+    await post(`/api/nodes/${r.id}/commits`, { repo: 'demo', sha: repo.sha })
+
+    const out = await get(`/api/nodes/${r.id}/code-audit`)
+    assert.equal(out.ready, false)
+    assert.equal(out.totals.danger, 1)
+    assert.equal(out.blockers[0].rule, 'hardcoded_secret')
+    assert.ok(!JSON.stringify(out).includes('abcdefghijkl'), '不得回显原值')
+
+    const res = await fetch(`${base}/api/nodes/${r.id}/code-audit?format=md`)
+    assert.equal(res.status, 200)
+    assert.match(res.headers.get('content-type') || '', /text\/markdown/)
+    const md = await res.text()
+    assert.ok(md.startsWith('# 代码检查'))
+    assert.ok(md.includes('| 高危 |'))
+
+    const bad = await fetch(`${base}/api/nodes/${r.id}/code-audit?scope=Subtree`)
+    assert.equal(bad.status, 400)
+    assert.equal((await bad.json()).error.code, 'VALIDATION_FAILED')
+  } finally {
+    await close()
+    tmp.cleanup()
+    fs.rmSync(repo.root, { recursive: true, force: true })
+  }
 })
 
 // ---------- D2 回归：非法 scope 必须 400，不得静默降级 self ----------

@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util'
 import { openDb } from './db.mjs'
 import { createStore } from './store.mjs'
 import { loadConfig, saveConfig, maskToken, DB_PATH } from './config.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline, renderTestReportMd, setupWorkspace, getWorkspacePrompt, cleanupWorkspace, parseMaxParallelCli, renderSecretScanMd, renderDeliverySnapshotMd, renderReleaseSqlAuditMd } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline, renderTestReportMd, setupWorkspace, getWorkspacePrompt, cleanupWorkspace, parseMaxParallelCli, renderSecretScanMd, renderDeliverySnapshotMd, renderReleaseSqlAuditMd, renderCodeAuditMd, getNodeCodeAudit } from './ops.mjs'
 import { startAgentRun, retryAndDispatch, waitForAgentRun } from './agent.mjs'
 import { saveUpload } from './uploads.mjs'
 
@@ -160,10 +160,6 @@ const HELP = `task-board <命令>
   test acceptance-status <ref> [--scope self|subtree] [--format json|md]   验收签收状态（测试证据 + 业务签收）
   test acceptance-sign <ref> --decision accepted|rejected [--scope self|subtree] [--comment "验收意见"]   签收 / 驳回
   readiness check <ref> [--scope self|subtree] [--format json|md]   需求就绪门禁（需求内容 + 概要设计 + 可回归用例）
-  design outline <ref> [--scope self|subtree] [--format json|md]     概要设计大纲 / 思维导图（从需求树推导 markdown 骨架）
-  design apply <ref> [--scope self|subtree] [--overwrite] [--dry-run] 把推导出的骨架写入「概要设计」文档（默认不覆盖已填写内容）
-  mindmap <ref> [--scope self|subtree] [--max-depth N] [--format json|md]  思维导图（mermaid mindmap 投影；看整棵子树用 --scope subtree）
-  secret scan <ref> [--scope self|subtree] [--format json|md]      文档敏感信息扫描（只读；命中值默认脱敏）
   delivery gate <ref> [--scope self|subtree] [--format json|md]     交付门禁（需求就绪 + 测试验收 + 上线治理的最终汇总）
   delivery snapshot <ref> [--scope self|subtree] [--note <备注>]    冻结当前交付证据快照
   delivery snapshots <ref> [--scope self|subtree] [--limit N]       交付快照列表（含当前 / 已偏离核对）
@@ -622,6 +618,14 @@ export async function run(argv) {
       })
       if (store.normalizeFormat(values.format) === 'md') process.stdout.write(renderSecretScanMd(scan) + '\n')
       else json(scan)
+      break
+    }
+        // ---------- 代码检查（`code audit <ref>`） ----------
+    case 'code audit': {
+      const node = store.resolveRef(ref)
+      const audit = await getNodeCodeAudit(store, node.id, { scope: values.scope })
+      if (store.normalizeFormat(values.format) === 'md') process.stdout.write(renderCodeAuditMd(audit) + '\n')
+      else json(audit)
       break
     }
     // ---------- 交付门禁（`delivery gate <ref>`） ----------
