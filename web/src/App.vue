@@ -6,6 +6,7 @@
         <el-menu-item index="requirements">需求管理</el-menu-item>
         <el-menu-item index="documents">文档管理</el-menu-item>
         <el-menu-item index="structure">结构探索</el-menu-item>
+        <el-menu-item index="audit">操作审计</el-menu-item>
         <el-menu-item index="tree">任务树</el-menu-item>
         <el-menu-item index="attr-defs">属性定义</el-menu-item>
         <el-menu-item index="settings">设置</el-menu-item>
@@ -15,6 +16,7 @@
       <RequirementsView v-if="view === 'requirements'" @select="onNodeSelect" />
       <DocumentsView v-if="view === 'documents'" />
       <StructureView v-if="view === 'structure'" @select="onNodeSelect" />
+      <AuditView v-if="view === 'audit'" @select="onNodeSelect" />
       <TreeView v-if="view === 'tree'" ref="treeRef" @select="onNodeSelect" />
       <AttrDefsView v-if="view === 'attr-defs'" />
       <SettingsView v-if="view === 'settings'" />
@@ -28,6 +30,7 @@ import { ref, shallowRef } from 'vue'
 import RequirementsView from './views/RequirementsView.vue'
 import DocumentsView from './views/DocumentsView.vue'
 import StructureView from './views/StructureView.vue'
+import AuditView from './views/AuditView.vue'
 import TreeView from './views/TreeView.vue'
 import AttrDefsView from './views/AttrDefsView.vue'
 import SettingsView from './views/SettingsView.vue'

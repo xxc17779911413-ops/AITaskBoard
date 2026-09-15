@@ -50,6 +50,7 @@ export const TOOLS = [
   'acceptance_report',
   'acceptance_conclusion',
   'structure_graph',
+  'audit_list',
   'requirement_readiness',
   'delivery_gate',
   'release_item_list',
@@ -862,7 +863,7 @@ export async function approveAndMerge(store, nodeRef, { by = 'user' } = {}) {
 export function runTestCases(
   store,
   nodeRef,
-  { caseIds = null, kind = null, prompt = null, agent = undefined, model = undefined, cwd = null, dryRun = false } = {},
+  { caseIds = null, kind = null, prompt = null, agent = undefined, model = undefined, cwd = null, dryRun = false, confirm = false } = {},
   by = 'user'
 ) {
   const node = store.resolveRef(String(nodeRef))
@@ -883,6 +884,13 @@ export function runTestCases(
       prompt: composed
     }
   }
+  // 高风险：回归派单（AI 需显式确认；dryRun 预演不受限，确认只挡真派单）
+  store.requireRiskPermission('regression.run', {
+    actor: by,
+    confirm,
+    nodeId: node.id,
+    detail: { caseIds: cases.map((c) => c.id), kind: effectiveKind }
+  })
   const run = startAgentRun(store, node.id, { prompt: composed, agent, model, cwd }, by)
   const reports = cases.map((c) =>
     store.createTestReport(node.id, { caseId: c.id, runId: run.id, kind: c.kind, status: 'running', summary: `已派单执行：${c.name}` }, by)
@@ -1114,7 +1122,7 @@ export function renderReleaseChecklistMd(checklist) {
 export function runReleaseChecks(
   store,
   nodeRef,
-  { caseIds = null, scope = 'self', prompt = null, agent = undefined, model = undefined, cwd = null, dryRun = false } = {},
+  { caseIds = null, scope = 'self', prompt = null, agent = undefined, model = undefined, cwd = null, dryRun = false, confirm = false } = {},
   by = 'user'
 ) {
   const node = store.resolveRef(String(nodeRef))
@@ -1152,6 +1160,13 @@ export function runReleaseChecks(
       prompt: composed
     }
   }
+  // 高风险：上线检查派单（AI 需显式确认；dryRun 预演不受限，确认只挡真派单）
+  store.requireRiskPermission('release.check', {
+    actor: by,
+    confirm,
+    nodeId: node.id,
+    detail: { scope: effectiveScope, caseIds: checks.map((c) => c.id) }
+  })
   const run = startAgentRun(store, node.id, { prompt: composed, agent, model, cwd }, by)
   // 报告挂回各自用例所属节点，保证 acceptance / checklist 聚合能按节点正确归位
   const reports = checks.map((c) =>

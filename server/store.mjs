@@ -384,7 +384,7 @@ export function createStore(db, options = {}) {
     return requirementVO(rawNode(node.id))
   }
 
-  function transitionRequirement(nodeId, { status, actor: by = 'user' } = {}) {
+  function transitionRequirement(nodeId, { status, actor: by = 'user', confirm = false } = {}) {
     const cur = rawNode(nodeId)
     if (cur.type !== 'requirement') {
       throw new AppError(CODES.VALIDATION_FAILED, `节点 ${cur.id} 不是需求条目`, { nodeId: cur.id, nodeType: cur.type })
@@ -409,6 +409,13 @@ export function createStore(db, options = {}) {
         allowed: requirementTransitions[cur.status] || []
       })
     }
+    // 高风险：状态流转（AI 需显式确认；被拒也留痕）
+    requireRiskPermission('requirement.transition', {
+      actor: by,
+      confirm,
+      nodeId,
+      detail: { from: cur.status, to: status }
+    })
     updateNode(nodeId, { status }, by, { allowRequirementTransition: true })
     return requirementVO(rawNode(nodeId))
   }
@@ -2007,6 +2014,148 @@ export function createStore(db, options = {}) {
     }
   }
 
+  // ---------- 权限边界与操作审计（高风险操作的最小审批 + 留痕） ----------
+  //
+  // 不做完整 RBAC：只对「AI / agent 触发的高风险操作」做最小审批与留痕。
+  // 原则：AI（actor = ai / mcp）触发高风险写操作时默认需要显式确认（confirm:true），
+  // 人工（user / cli / import）是「已经有人在场」的通道，默认放行；被拒绝的调用同样留痕，便于事后追溯。
+  //
+  // 高风险操作（action）：
+  //   release.check            上线检查派单（runReleaseChecks）
+  //   regression.run           回归派单（runTestCases）
+  //   requirement.transition   需求状态流转
+  //   release.item.write       上线配置 / SQL 变更（上线项新增 / 更新 / 删除）
+  const RISK_ACTIONS = new Set([
+    'release.check',
+    'regression.run',
+    'requirement.transition',
+    'release.item.write'
+  ])
+  // AI 通道：MCP 的 actor 是 'ai'；历史代码里也有 'mcp'。两者都视为需要确认的自动触发者。
+  const AI_ACTORS = new Set(['ai', 'mcp'])
+  const AUDIT_DECISIONS = new Set(['allowed', 'denied', 'confirmed', 'pending'])
+
+  // 高风险判定用的「通道」：AI/agent（ai / mcp）需要确认；其余是人工通道。
+  // 不能直接用 actor()——它把未知值（含历史 MCP 用的 'mcp'）统一归一成 'user'，
+  // 那样自动触发者会被误判成「有人在场」而绕过审批。这里先看原始值，再落到稳定通道名。
+  function riskChannel(by) {
+    const raw = String(by ?? 'user')
+    if (AI_ACTORS.has(raw)) return 'ai'
+    if (raw === 'cli') return 'cli'
+    if (raw === 'import') return 'import'
+    return 'user'
+  }
+
+  /**
+   * 高风险操作权限判定（纯函数，便于单测与三入口共用）。
+   * 返回 `{ allowed, requiresConfirm, reason }`：
+   *   - 未知 action → VALIDATION_FAILED（不当作放行）；
+   *   - 人工通道（user / cli / import）→ allowed；
+   *   - AI 通道（ai / mcp）→ 需要显式 confirm / approved；
+   *   - confirm 为真 → allowed（审批通过）。
+   */
+  function checkRiskPermission(action, { actor: by = 'user', confirm = false } = {}) {
+    if (!RISK_ACTIONS.has(action)) {
+      throw new AppError(CODES.VALIDATION_FAILED, `未知高风险操作 ${action}`, {
+        action,
+        allowed: [...RISK_ACTIONS]
+      })
+    }
+    const who = riskChannel(by)
+    if (who !== 'ai') {
+      return { allowed: true, requiresConfirm: false, reason: 'manual-actor', action, actor: who }
+    }
+    if (confirm === true || confirm === 'true') {
+      return { allowed: true, requiresConfirm: false, reason: 'confirmed', action, actor: who }
+    }
+    return { allowed: false, requiresConfirm: true, reason: 'ai-requires-confirm', action, actor: who }
+  }
+
+  function auditLogVO(r) {
+    return {
+      id: r.id,
+      action: r.action,
+      nodeId: r.node_id,
+      actor: r.actor,
+      decision: r.decision,
+      reason: r.reason,
+      detail: r.detail == null ? null : safeParse(r.detail),
+      createdAt: r.created_at
+    }
+  }
+
+  /**
+   * 写一条审计日志。高风险操作无论放行 / 拒绝 / 确认都留痕；
+   * 只写审计表、不额外 bump revision（审计是旁路观测，不该放大数据版本噪声）。
+   */
+  function recordAudit({ action, nodeId = null, actor: by = 'user', decision, reason = null, detail = null }) {
+    if (!RISK_ACTIONS.has(action)) {
+      throw new AppError(CODES.VALIDATION_FAILED, `未知审计动作 ${action}`, { action, allowed: [...RISK_ACTIONS] })
+    }
+    if (!AUDIT_DECISIONS.has(decision)) {
+      throw new AppError(CODES.VALIDATION_FAILED, `未知审计结论 ${decision}`, { decision, allowed: [...AUDIT_DECISIONS] })
+    }
+    const info = db
+      .prepare('INSERT INTO audit_logs (action,node_id,actor,decision,reason,detail,created_at) VALUES (?,?,?,?,?,?,?)')
+      .run(action, nodeId, riskChannel(by), decision, reason, detail == null ? null : JSON.stringify(detail), now())
+    return auditLogVO(db.prepare('SELECT * FROM audit_logs WHERE id = ?').get(Number(info.lastInsertRowid)))
+  }
+
+  /**
+   * 高风险操作统一入口：判定 → 留痕 → 拒绝时抛错。
+   * 放行时返回 `{ ok:true, audit }`，调用方据此继续执行真正的写操作。
+   */
+  function requireRiskPermission(action, { actor: by = 'user', confirm = false, nodeId = null, detail = null } = {}) {
+    const decision = checkRiskPermission(action, { actor: by, confirm })
+    if (!decision.allowed) {
+      const audit = recordAudit({ action, nodeId, actor: by, decision: 'denied', reason: decision.reason, detail })
+      throw new AppError(CODES.PERMISSION_DENIED, `高风险操作 ${action} 需要显式确认（当前 actor=${decision.actor}）`, {
+        action,
+        actor: decision.actor,
+        confirmRequired: true,
+        auditId: audit.id
+      })
+    }
+    const audit = recordAudit({
+      action,
+      nodeId,
+      actor: by,
+      decision: decision.reason === 'confirmed' ? 'confirmed' : 'allowed',
+      reason: decision.reason,
+      detail
+    })
+    return { ok: true, audit }
+  }
+
+  function listAuditLogs({ action = null, nodeId = null, decision = null, limit = 100 } = {}) {
+    const where = []
+    const args = []
+    if (action) {
+      if (!RISK_ACTIONS.has(action)) {
+        throw new AppError(CODES.VALIDATION_FAILED, `未知审计动作 ${action}`, { action, allowed: [...RISK_ACTIONS] })
+      }
+      where.push('action = ?')
+      args.push(action)
+    }
+    if (nodeId != null && nodeId !== '') {
+      where.push('node_id = ?')
+      args.push(Number(nodeId))
+    }
+    if (decision) {
+      if (!AUDIT_DECISIONS.has(decision)) {
+        throw new AppError(CODES.VALIDATION_FAILED, `未知审计结论 ${decision}`, { decision, allowed: [...AUDIT_DECISIONS] })
+      }
+      where.push('decision = ?')
+      args.push(decision)
+    }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : ''
+    args.push(Number(limit) || 100)
+    return db
+      .prepare(`SELECT * FROM audit_logs ${clause} ORDER BY id DESC LIMIT ?`)
+      .all(...args)
+      .map(auditLogVO)
+  }
+
   // ---------- 上线治理（上线配置 / 上线 SQL / 上线检查清单） ----------
   //
   // 需求 → 概要设计/文档 → 回归测试（test_cases）→ 上线清单（release_items）。
@@ -2053,7 +2202,8 @@ export function createStore(db, options = {}) {
   function createReleaseItem(
     nodeId,
     { name, kind = 'config', content = '', rollback = null, status = 'pending', required = 1 },
-    by = 'user'
+    by = 'user',
+    { confirm = false } = {}
   ) {
     rawNode(nodeId)
     if (!name || !String(name).trim()) {
@@ -2061,6 +2211,7 @@ export function createStore(db, options = {}) {
     }
     assertReleaseKind(kind)
     assertReleaseStatus(status)
+    requireRiskPermission('release.item.write', { actor: by, confirm, nodeId, detail: { op: 'create', name: String(name).trim(), kind, status } })
     const trimmed = String(name).trim()
     const dup = db.prepare('SELECT id FROM release_items WHERE node_id = ? AND name = ?').get(nodeId, trimmed)
     if (dup) {
@@ -2103,7 +2254,7 @@ export function createStore(db, options = {}) {
    * 否则「只想改一句 content」的调用会把 rollback / status 静默清掉（独立测试第 6 节第 3 点）。
    * 需要显式清空某字段就传空值（如 `rollback: null` / `content: ''`）。
    */
-  function upsertReleaseItem(nodeId, { name, kind, content, rollback, status, required } = {}, by = 'user') {
+  function upsertReleaseItem(nodeId, { name, kind, content, rollback, status, required } = {}, by = 'user', { confirm = false } = {}) {
     rawNode(nodeId)
     const trimmed = name == null ? '' : String(name).trim()
     if (!trimmed) throw new AppError(CODES.VALIDATION_FAILED, '上线项名称必填', { field: 'name' })
@@ -2120,7 +2271,8 @@ export function createStore(db, options = {}) {
             status: status ?? 'pending',
             required: required ?? 1
           },
-          by
+          by,
+          { confirm }
         ),
         created: true
       }
@@ -2134,7 +2286,8 @@ export function createStore(db, options = {}) {
         status: status ?? null,
         required: required !== undefined ? required : null
       },
-      by
+      by,
+      { confirm }
     )
     return { ...updated, created: false }
   }
@@ -2142,12 +2295,19 @@ export function createStore(db, options = {}) {
   function updateReleaseItem(
     id,
     { name = null, kind = null, content = undefined, rollback = undefined, status = null, required = null } = {},
-    by = 'user'
+    by = 'user',
+    { confirm = false } = {}
   ) {
     const cur = db.prepare('SELECT * FROM release_items WHERE id = ?').get(Number(id))
     if (!cur) throw new AppError(CODES.NOT_FOUND, `上线项 ${id} 不存在`, { id })
     if (kind != null) assertReleaseKind(kind)
     if (status != null) assertReleaseStatus(status)
+    requireRiskPermission('release.item.write', {
+      actor: by,
+      confirm,
+      nodeId: cur.node_id,
+      detail: { op: 'update', id: Number(id), status: status ?? cur.status, kind: kind ?? cur.kind }
+    })
     if (name != null && !String(name).trim()) {
       throw new AppError(CODES.VALIDATION_FAILED, '上线项名称不能为空', { field: 'name' })
     }
@@ -2175,9 +2335,15 @@ export function createStore(db, options = {}) {
     return releaseItemVO(db.prepare('SELECT * FROM release_items WHERE id = ?').get(Number(id)))
   }
 
-  function deleteReleaseItem(id) {
-    const cur = db.prepare('SELECT id FROM release_items WHERE id = ?').get(Number(id))
+  function deleteReleaseItem(id, by = 'user', { confirm = false } = {}) {
+    const cur = db.prepare('SELECT * FROM release_items WHERE id = ?').get(Number(id))
     if (!cur) throw new AppError(CODES.NOT_FOUND, `上线项 ${id} 不存在`, { id })
+    requireRiskPermission('release.item.write', {
+      actor: by,
+      confirm,
+      nodeId: cur.node_id,
+      detail: { op: 'delete', id: Number(id), name: cur.name }
+    })
     db.prepare('DELETE FROM release_items WHERE id = ?').run(Number(id))
     bumpRevision()
     return { id: Number(id) }
@@ -3252,6 +3418,11 @@ export function createStore(db, options = {}) {
     buildAcceptanceReport,
     buildAcceptanceConclusion,
     buildStructureGraph,
+    checkRiskPermission,
+    recordAudit,
+    requireRiskPermission,
+    listAuditLogs,
+    RISK_ACTIONS,
     // 需求就绪门禁（需求管理闭环的前置判定）
     SCOPE_VALUES,
     normalizeScope,

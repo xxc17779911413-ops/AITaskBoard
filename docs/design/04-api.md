@@ -8,6 +8,7 @@
 | GET | `/api/health` | 健康检查，返回版本与数据文件路径 |
 | GET | `/api/schema` | 节点类型、状态值域、属性定义、工具清单（AI 能力发现） |
 | GET | `/api/revision` | 数据版本号（任何写入 +1），供前端轮询与 AI 判断变更 |
+| GET | `/api/audit-logs` | 操作审计日志（只读）：`?action=release.check\|regression.run\|requirement.transition\|release.item.write`、`?decision=allowed\|denied\|confirmed\|pending`、`?nodeId=`、`?limit=`；倒序；纯读不 bump revision |
 | GET | `/api/tree?format=md` | 缩进 markdown 树（AI 读取用）；默认 `json` |
 | GET | `/api/tree` | 全量树数据：`[{id,type,parentId,name,status,sort,attrs:{key:value}}]`，前端组树与过滤 |
 | GET | `/api/nodes/:id` | 节点详情：核心字段 + `attrs` + `commits` + `mrs` + `children` |
@@ -17,7 +18,7 @@
 | POST | `/api/nodes/reorder` | `{parentId, orderedIds[]}` 一次性写入同级顺序 |
 | GET | `/api/requirements?projectId=&status=` | 需求管理列表：需求条目 + 文档关联状态 + 就绪结论 + KPI |
 | POST | `/api/requirements` | 新建需求条目并自动关联「需求内容 / 概要设计」两份文档 `{projectId?, projectPath?, name, attrs?}` |
-| POST | `/api/requirements/:id/transition` | 需求状态流转 `{status}`；只允许 `todo→doing→testing→done`，未完成前可取消，取消后可恢复 |
+| POST | `/api/requirements/:id/transition` | 需求状态流转 `{status, confirm?}`；只允许 `todo→doing→testing→done`，未完成前可取消，取消后可恢复。高风险：AI 通道（`x-taskboard-actor: ai`）需 `confirm:true`，否则 403 `PERMISSION_DENIED` 并留审计 |
 | GET | `/api/documents/overview?projectId=&status=&q=&docName=&fill=filled\|empty` | 需求文档集中检索与缺口对账：展平文档、核心文档关联/填充状态、未关联/空白/已填写统计；纯读 |
 | POST | `/api/nodes/upsert` | 按路径 get-or-create（幂等）：`{path, type?, name?, attrs?}` |
 | POST | `/api/batch` | 批量操作：`{ops:[...], dryRun?}`，一次调用执行多步 |
@@ -70,7 +71,7 @@
 | POST | `/api/nodes/:id/test-cases/reorder` | `{orderedIds[]}` 重排用例 |
 | PATCH | `/api/test-cases/:cid` | 更新用例 `{name?, kind?, prompt?, expectation?, enabled?}` |
 | DELETE | `/api/test-cases/:cid` | 删除用例（历史报告保留，`case_id` 置空） |
-| POST | `/api/nodes/:id/test-runs` | 派单执行：`{caseIds?, kind?, prompt?, agent?, model?, cwd?, dryRun?}`；为每条用例开 `running` 报告，返回 `{node, kind, run, reports}`（dryRun 只回用例与提示词）；任务落终态时自动收尾关联报告（见下） |
+| POST | `/api/nodes/:id/test-runs` | 派单执行：`{caseIds?, kind?, prompt?, agent?, model?, cwd?, dryRun?, confirm?}`；为每条用例开 `running` 报告，返回 `{node, kind, run, reports}`（dryRun 只回用例与提示词，且**不需要 confirm**）；高风险：AI 真派单需 `confirm:true`，任务落终态时自动收尾关联报告（见下） |
 | GET | `/api/nodes/:id/test-reports` | 报告列表（倒序）；`?caseId=&kind=&limit=` |
 | GET | `/api/test-reports/:rid` | 单条报告详情 |
 | PATCH | `/api/test-reports/:rid` | 回写报告 `{status, summary?, detail?, runId?, overwrite?}`；`running → 终态` 单向，终态同状态幂等；终态互转默认拒绝 `REPORT_STATUS_IMMUTABLE`（409），`overwrite:true` 才覆盖；**自动收尾（`autoFinalized=true`）的终态可无需 `overwrite` 直接改正**；非法 `status` → 400 `VALIDATION_FAILED` |
@@ -100,12 +101,12 @@
 |---|---|---|
 | GET | `/api/nodes/:id/release-items` | 该节点的上线项；`?kind=config\|sql\|check`、`?status=` 筛，`?includeOptional=false` 只看必做 |
 | POST | `/api/nodes/:id/release-items` | 新增上线项 `{name, kind?, content?, rollback?, status?, required?}`；重名 → 409 `RELEASE_ITEM_NAME_EXISTS` |
-| POST | `/api/nodes/:id/release-items/upsert` | 按项名 get-or-create 并写内容（幂等）：`{name, kind?, content?, rollback?, status?, required?}`。**新建**时未传字段取默认值；**已存在**时只更新显式传入的字段（未传的保持原样）；入口一律透传、不补默认值 |
+| POST | `/api/nodes/:id/release-items/upsert` | 按项名 get-or-create 并写内容（幂等）：`{name, kind?, content?, rollback?, status?, required?, confirm?}`。**新建**时未传字段取默认值；**已存在**时只更新显式传入的字段（未传的保持原样）；入口一律透传、不补默认值。高风险（配置 / SQL 变更）：AI 需 `confirm:true` |
 | POST | `/api/nodes/:id/release-items/reorder` | `{orderedIds[]}` 重排上线项 |
-| PATCH | `/api/release-items/:rid` | 更新上线项 `{name?, kind?, content?, rollback?, status?, required?}` |
+| PATCH | `/api/release-items/:rid` | 更新上线项 `{name?, kind?, content?, rollback?, status?, required?, confirm?}`；高风险：AI 需 `confirm:true` |
 | DELETE | `/api/release-items/:rid` | 删除上线项 |
 | GET | `/api/nodes/:id/release-checklist` | 上线检查清单：`?scope=self\|subtree`，`?format=json\|md`（md 直接贴上线单）。就绪 = 必做上线项全部 `done`/`skipped` **且** 全部启用中的 `code_check`/`biz_check`/`release_check` 用例最近一次为 `pass`；两类阻塞分列 `blockers`/`caseBlockers`；空态（既无必做项也无检查用例）`ready=null` |
-| POST | `/api/nodes/:id/release-checks` | 派单上线前置检查：`{caseIds?, scope?, prompt?, agent?, model?, cwd?, dryRun?}`；按 scope（`self`/`subtree`）挑 `code_check`/`biz_check`/`release_check` 用例，为每条开 `running` 报告（dryRun 只回清单与提示词） |
+| POST | `/api/nodes/:id/release-checks` | 派单上线前置检查：`{caseIds?, scope?, prompt?, agent?, model?, cwd?, dryRun?, confirm?}`；按 scope（`self`/`subtree`）挑 `code_check`/`biz_check`/`release_check` 用例，为每条开 `running` 报告（dryRun 只回清单与提示词，且不需要 confirm）。高风险：AI 真派单需 `confirm:true` |
 
 ### agent 运行时 / 会话 / 任务
 

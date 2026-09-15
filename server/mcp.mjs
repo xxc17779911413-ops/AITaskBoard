@@ -42,6 +42,21 @@ export function createMcpServer({ store }) {
     return { content: [{ type: 'text', text: JSON.stringify(buildSchema(store, loadConfig()), null, 2) }] }
   })
 
+  server.tool(
+    'audit_list',
+    '操作审计日志（只读）：高风险操作（release.check / regression.run / requirement.transition / release.item.write）的 allowed / denied / confirmed 留痕',
+    {
+      action: z.string().optional(),
+      nodeId: z.number().optional(),
+      decision: z.enum(['allowed', 'denied', 'confirmed', 'pending']).optional(),
+      limit: z.number().optional()
+    },
+    mcpValidate(async ({ action, nodeId, decision, limit }) => {
+      const list = store.listAuditLogs({ action: action || null, nodeId: nodeId ?? null, decision: decision || null, limit: limit || 100 })
+      return { content: [{ type: 'text', text: JSON.stringify(list, null, 2) }] }
+    })
+  )
+
   server.tool('node_get', '获取节点详情', { ref: z.string().describe('id 或路径') }, async ({ ref }) => {
     const node = store.resolveRef(ref)
     return {
@@ -157,10 +172,10 @@ export function createMcpServer({ store }) {
   server.tool(
     'requirement_transition',
     '需求状态流转（todo→doing→testing→done；未完成前可 cancelled；cancelled→todo 可恢复）',
-    { ref: z.string(), status: z.string() },
-    mcpValidate(async ({ ref, status }) => {
+    { ref: z.string(), status: z.string(), confirm: z.boolean().optional().describe('高风险：AI 触发状态流转需显式 confirm:true') },
+    mcpValidate(async ({ ref, status, confirm }) => {
       const node = store.resolveRef(ref)
-      return { content: [{ type: 'text', text: JSON.stringify(store.transitionRequirement(node.id, { status, actor: 'ai' }), null, 2) }] }
+      return { content: [{ type: 'text', text: JSON.stringify(store.transitionRequirement(node.id, { status, actor: 'ai', confirm: !!confirm }), null, 2) }] }
     })
   )
 
@@ -761,13 +776,14 @@ export function createMcpServer({ store }) {
       agent: z.string().optional(),
       model: z.string().optional(),
       cwd: z.string().optional(),
-      dryRun: z.boolean().optional()
+      dryRun: z.boolean().optional(),
+      confirm: z.boolean().optional().describe('高风险：AI 真派单需显式 confirm:true（dryRun 预演不需要）')
     },
-    async ({ node, caseIds, kind, prompt, agent, model, cwd, dryRun }) => {
+    mcpValidate(async ({ node, caseIds, kind, prompt, agent, model, cwd, dryRun, confirm }) => {
       const n = store.resolveRef(String(node))
-      const out = runTestCases(store, n.id, { caseIds: caseIds || null, kind: kind || null, prompt: prompt || null, agent, model, cwd, dryRun: !!dryRun }, 'mcp')
+      const out = runTestCases(store, n.id, { caseIds: caseIds || null, kind: kind || null, prompt: prompt || null, agent, model, cwd, dryRun: !!dryRun, confirm: !!confirm }, 'mcp')
       return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] }
-    }
+    })
   )
 
   server.tool(
@@ -905,9 +921,10 @@ export function createMcpServer({ store }) {
       content: z.string().optional(),
       rollback: z.string().optional(),
       status: z.enum(['pending', 'ready', 'done', 'blocked', 'skipped']).optional(),
-      required: z.boolean().optional()
+      required: z.boolean().optional(),
+      confirm: z.boolean().optional().describe('高风险：AI 变更上线配置 / SQL 需显式 confirm:true')
     },
-    async ({ node, name, kind, content, rollback, status, required }) => {
+    mcpValidate(async ({ node, name, kind, content, rollback, status, required, confirm }) => {
       const n = store.resolveRef(String(node))
       const item = store.upsertReleaseItem(
         n.id,
@@ -921,10 +938,11 @@ export function createMcpServer({ store }) {
           status,
           required
         },
-        'mcp'
+        'mcp',
+        { confirm: !!confirm }
       )
       return { content: [{ type: 'text', text: JSON.stringify(item, null, 2) }] }
-    }
+    })
   )
 
   server.tool(
@@ -937,18 +955,24 @@ export function createMcpServer({ store }) {
       content: z.string().optional(),
       rollback: z.string().optional(),
       status: z.enum(['pending', 'ready', 'done', 'blocked', 'skipped']).optional(),
-      required: z.boolean().optional()
+      required: z.boolean().optional(),
+      confirm: z.boolean().optional().describe('高风险：AI 变更上线配置 / SQL 需显式 confirm:true')
     },
-    async ({ id, name, kind, content, rollback, status, required }) => {
-      const item = store.updateReleaseItem(id, { name, kind, content, rollback, status, required }, 'mcp')
+    mcpValidate(async ({ id, name, kind, content, rollback, status, required, confirm }) => {
+      const item = store.updateReleaseItem(id, { name, kind, content, rollback, status, required }, 'mcp', { confirm: !!confirm })
       return { content: [{ type: 'text', text: JSON.stringify(item, null, 2) }] }
-    }
+    })
   )
 
-  server.tool('release_item_remove', '删除上线项', { id: z.number() }, async ({ id }) => {
-    const out = store.deleteReleaseItem(id)
-    return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] }
-  })
+  server.tool(
+    'release_item_remove',
+    '删除上线项',
+    { id: z.number(), confirm: z.boolean().optional().describe('高风险：AI 删除上线项需显式 confirm:true') },
+    mcpValidate(async ({ id, confirm }) => {
+      const out = store.deleteReleaseItem(id, 'mcp', { confirm: !!confirm })
+      return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] }
+    })
+  )
 
   server.tool(
     'release_item_reorder',
@@ -984,14 +1008,15 @@ export function createMcpServer({ store }) {
       agent: z.string().optional(),
       model: z.string().optional(),
       cwd: z.string().optional(),
-      dryRun: z.boolean().optional()
+      dryRun: z.boolean().optional(),
+      confirm: z.boolean().optional().describe('高风险：AI 真派单需显式 confirm:true（dryRun 预演不需要）')
     },
-    mcpValidate(async ({ node, caseIds, scope, prompt, agent, model, cwd, dryRun }) => {
+    mcpValidate(async ({ node, caseIds, scope, prompt, agent, model, cwd, dryRun, confirm }) => {
       const n = store.resolveRef(String(node))
       const out = runReleaseChecks(
         store,
         n.id,
-        { caseIds: caseIds || null, scope, prompt: prompt || null, agent, model, cwd, dryRun: !!dryRun },
+        { caseIds: caseIds || null, scope, prompt: prompt || null, agent, model, cwd, dryRun: !!dryRun, confirm: !!confirm },
         'mcp'
       )
       return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] }

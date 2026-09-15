@@ -518,6 +518,34 @@ curl -s 'http://127.0.0.1:3210/api/nodes/1/delivery-gate?format=md'
 > `scope` / `format` 都是枚举：非法值返回 `400 VALIDATION_FAILED`，不会静默降级。
 > 验收来源只聚合**启用中**的用例；停用用例不算 `notRun`、也不阻塞交付。
 
+## 权限边界与操作审计
+
+```bash
+# 高风险操作（AI 通道需显式 confirm；人工通道默认放行）
+curl -s -X POST http://127.0.0.1:3210/api/requirements/3/transition \
+  -H 'content-type: application/json' -H 'x-taskboard-actor: ai' \
+  -d '{"status":"doing","confirm":true}'
+
+# AI 未确认 → 403 PERMISSION_DENIED（details.confirmRequired=true / auditId），且写入审计
+curl -s -X POST http://127.0.0.1:3210/api/requirements/3/transition \
+  -H 'content-type: application/json' -H 'x-taskboard-actor: ai' \
+  -d '{"status":"doing"}'
+
+# 查看审计日志（只读，倒序）
+curl -s 'http://127.0.0.1:3210/api/audit-logs?decision=denied'
+curl -s 'http://127.0.0.1:3210/api/audit-logs?action=release.item.write&nodeId=3'
+
+# CLI / MCP 等价入口
+# node bin/taskboard.js audit list [--action release.check|regression.run|requirement.transition|release.item.write] [--decision allowed|denied|confirmed|pending] [--node-id N]
+# node bin/taskboard.js requirement transition "项目A/需求1" --status doing --actor ai --confirm
+# MCP: audit_list { action?, nodeId?, decision?, limit? }；高风险 tool 传 confirm: true
+```
+
+> 四类高风险操作：`release.check`（上线检查派单）/ `regression.run`（回归派单）/
+> `requirement.transition`（状态流转）/ `release.item.write`（配置·SQL 变更）。
+> `dryRun` 预演不需要确认；闸门在真正的写操作 / 派单之前，被拒时不产生状态变更、报告或 agent 任务。
+> 审计记录 `allowed` / `denied` / `confirmed`，只写审计表、不 bump revision。
+
 ## 错误码速查
 
 | HTTP | code | 场景 |
@@ -527,6 +555,7 @@ curl -s 'http://127.0.0.1:3210/api/nodes/1/delivery-gate?format=md'
 | 400 | `LEAF_NODE` | 在叶子节点下建子节点 |
 | 400 | `CYCLE_DETECTED` | 移动到自身或后代 |
 | 400 | `CONFIRM_REQUIRED` | 破坏性操作未确认 |
+| 403 | `PERMISSION_DENIED` | AI/agent 触发高风险操作（上线检查 / 回归派单 / 状态流转 / 配置·SQL 变更）但未显式 `confirm`；人工通道默认放行 |
 | 400 | `REPO_NOT_REGISTERED` / `REPO_PATH_MISSING` | 仓库未登记 / 本地路径无效 |
 | 400 | `BRANCH_NOT_FOUND` / `BRANCH_EXISTS_DIFFERENT_BASE` | 分支不存在 / 同名不同基 |
 | 400 | `GITLAB_NOT_CONFIGURED` | 未配置 GitLab |

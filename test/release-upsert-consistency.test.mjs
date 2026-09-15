@@ -172,10 +172,11 @@ test('一致性（MCP）：release_item_upsert 只传 content 时保留既有字
   })
   const p = store.createNode({ type: 'project', name: 'P' })
   const r = store.createNode({ parentId: p.id, type: 'requirement', name: 'R' })
-  const first = await call('release_item_upsert', { node: r.id, name: 'X', ...SEED })
+  // 高风险（AI 变更上线配置 / SQL）需显式确认——本用例关注 upsert 语义，故带 confirm
+  const first = await call('release_item_upsert', { node: r.id, name: 'X', ...SEED, confirm: true })
   assert.equal(first.created, true)
 
-  const second = await call('release_item_upsert', { node: r.id, name: 'X', content: 'v2' })
+  const second = await call('release_item_upsert', { node: r.id, name: 'X', content: 'v2', confirm: true })
   assert.equal(second.created, false)
   assert.equal(second.content, 'v2')
   assert.equal(second.kind, 'sql')
@@ -192,7 +193,7 @@ test('一致性（MCP）：release_item_upsert 新建时未传字段仍取默认
   })
   const p = store.createNode({ type: 'project', name: 'P' })
   const r = store.createNode({ parentId: p.id, type: 'requirement', name: 'R' })
-  const item = await call('release_item_upsert', { node: r.id, name: '仅名字' })
+  const item = await call('release_item_upsert', { node: r.id, name: '仅名字', confirm: true })
   assert.equal(item.created, true)
   assert.equal(item.kind, 'config')
   assert.equal(item.content, '')

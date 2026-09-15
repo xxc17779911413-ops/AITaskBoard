@@ -11,6 +11,7 @@ const STATUS_BY_CODE = {
   [CODES.LEAF_NODE]: 400,
   [CODES.CYCLE_DETECTED]: 400,
   [CODES.CONFIRM_REQUIRED]: 400,
+  [CODES.PERMISSION_DENIED]: 403,
   [CODES.REPO_NOT_REGISTERED]: 400,
   [CODES.REPO_PATH_MISSING]: 400,
   [CODES.BRANCH_NOT_FOUND]: 400,
@@ -64,6 +65,21 @@ export function createApp({ store }) {
   )
 
   app.get('/api/revision', wrap((req, res) => res.json({ revision: store.getRevision() })))
+
+  // 操作审计日志（只读）：高风险操作的 allowed / denied / confirmed 留痕，便于事后追溯。
+  app.get(
+    '/api/audit-logs',
+    wrap((req, res) => {
+      res.json(
+        store.listAuditLogs({
+          action: req.query.action || null,
+          nodeId: req.query.nodeId || null,
+          decision: req.query.decision || null,
+          limit: req.query.limit ? Number(req.query.limit) : 100
+        })
+      )
+    })
+  )
 
   app.get(
     '/api/tree',
@@ -176,7 +192,8 @@ export function createApp({ store }) {
     '/api/requirements/:id/transition',
     wrap((req, res) => {
       const node = store.resolveRef(refOf(req))
-      res.json(store.transitionRequirement(node.id, { status: (req.body || {}).status, actor: actorOf(req) }))
+      const b = req.body || {}
+      res.json(store.transitionRequirement(node.id, { status: b.status, actor: actorOf(req), confirm: b.confirm === true }))
     })
   )
 
@@ -550,7 +567,8 @@ export function createApp({ store }) {
           agent: b.agent,
           model: b.model,
           cwd: b.cwd,
-          dryRun: !!b.dryRun
+          dryRun: !!b.dryRun,
+          confirm: b.confirm === true
         }, actorOf(req))
       )
     })
@@ -700,7 +718,8 @@ export function createApp({ store }) {
             status: b.status,
             required: b.required
           },
-          actorOf(req)
+          actorOf(req),
+          { confirm: b.confirm === true }
         )
       )
     })
@@ -721,7 +740,8 @@ export function createApp({ store }) {
             status: b.status,
             required: b.required
           },
-          actorOf(req)
+          actorOf(req),
+          { confirm: b.confirm === true }
         )
       )
     })
@@ -748,14 +768,18 @@ export function createApp({ store }) {
             status: b.status,
             required: b.required
           },
-          actorOf(req)
+          actorOf(req),
+          { confirm: b.confirm === true }
         )
       )
     })
   )
   app.delete(
     '/api/release-items/:rid',
-    wrap((req, res) => res.json(store.deleteReleaseItem(Number(req.params.rid))))
+    wrap((req, res) => {
+      const confirm = req.query.confirm === 'true' || (req.body || {}).confirm === true
+      res.json(store.deleteReleaseItem(Number(req.params.rid), actorOf(req), { confirm }))
+    })
   )
   app.get(
     '/api/nodes/:id/release-checklist',
@@ -787,7 +811,8 @@ export function createApp({ store }) {
             agent: b.agent,
             model: b.model,
             cwd: b.cwd,
-            dryRun: !!b.dryRun
+            dryRun: !!b.dryRun,
+            confirm: b.confirm === true
           },
           actorOf(req)
         )

@@ -38,6 +38,7 @@
 | **上线治理**（上线配置 / 上线 SQL / 上线检查清单 + agent 前置检查派单） | `release-governance/` | — | server/{db,store,ops}.mjs（release_items）+ 三入口 release_* |
 | **验收结论**（按需求 / 版本合并测试结论与文档缺口，纯读聚合不落表） | `acceptance-conclusion/` | — | server/{store,ops}.mjs（buildAcceptanceConclusion）+ 三入口 acceptance_conclusion + RegressionPane |
 | **结构探索**（需求树 + 文档缺口/用例最近结论/需求就绪的只读图谱 + 基础筛选） | `structure-exploration/` | — | server/{store,ops}.mjs（buildStructureGraph）+ 三入口 structure_graph + web/src/views/StructureView.vue |
+| **权限边界与操作审计**（高风险操作的权限判定 + 最小确认 + 审计留痕 + 可追溯查看） | `audit-permission/` | — | server/{db,errors,store,ops}.mjs（audit_logs / checkRiskPermission）+ 三入口 audit_list + web/src/views/AuditView.vue |
 | **需求就绪门禁**（需求内容 / 概要设计 / 可回归用例三条门禁 + 子树汇总，纯读聚合不落表） | `requirement-readiness/` | — | server/{config,store,ops}.mjs（buildRequirementReadiness）+ 三入口 readiness |
 | **交付门禁**（需求就绪 / 测试验收 / 上线治理的最终汇总，纯读聚合不落表） | `delivery-gate/` | — | server/{store,ops}.mjs（buildDeliveryGate）+ 三入口 delivery_gate + NodeDrawer「交付」页签 |
 | **需求管理**（需求条目 / 受控状态流转 / 核心文档关联 + Web 需求管理页） | `requirement-management/` | — | server/{store,http,cli,mcp}.mjs（requirement_*）+ web/src/views/RequirementsView.vue |

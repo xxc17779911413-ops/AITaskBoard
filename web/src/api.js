@@ -109,6 +109,16 @@ export default {
     return api(`/nodes/${nodeId}/structure-graph${qs.toString() ? `?${qs}` : ''}`)
   },
 
+  // 操作审计日志（只读）
+  auditLogs: ({ action, nodeId, decision, limit } = {}) => {
+    const qs = new URLSearchParams()
+    if (action) qs.set('action', action)
+    if (nodeId) qs.set('nodeId', nodeId)
+    if (decision) qs.set('decision', decision)
+    if (limit) qs.set('limit', limit)
+    return api(`/audit-logs${qs.toString() ? `?${qs}` : ''}`)
+  },
+
   // 上线治理（上线配置 / 上线 SQL / 上线检查清单）
   releaseItemList: (nodeId, { kind, status, includeOptional } = {}) => {
     const qs = new URLSearchParams()

@@ -332,6 +332,19 @@ CREATE TABLE IF NOT EXISTS release_items (
 );
 CREATE INDEX IF NOT EXISTS idx_release_items_node ON release_items(node_id, sort, id);
 
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id INTEGER PRIMARY KEY,
+  action TEXT NOT NULL,
+  node_id INTEGER,
+  actor TEXT NOT NULL,
+  decision TEXT NOT NULL CHECK (decision IN ('allowed','denied','confirmed','pending')),
+  reason TEXT,
+  detail TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_node ON audit_logs(node_id, id);
+
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -504,6 +517,22 @@ function migrate(db) {
   `)
   // v5：报告标记「已由 run 终态自动收尾」，与人工回写区分（老库补列，SCHEMA 只对新库生效）
   addColumns(db, 'test_reports', [['auto_finalized', 'INTEGER NOT NULL DEFAULT 0']])
+
+  // v6：权限边界与操作审计（高风险操作留痕 + 最小审批）——老库补表，SCHEMA 只对新库生效
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id INTEGER PRIMARY KEY,
+      action TEXT NOT NULL,
+      node_id INTEGER,
+      actor TEXT NOT NULL,
+      decision TEXT NOT NULL CHECK (decision IN ('allowed','denied','confirmed','pending')),
+      reason TEXT,
+      detail TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(id);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_node ON audit_logs(node_id, id);
+  `)
 
   // 上线清单（v4）：老库补表；SCHEMA 只对新库生效
   db.exec(`

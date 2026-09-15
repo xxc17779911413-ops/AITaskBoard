@@ -71,6 +71,9 @@ const OPTIONS = {
   'case-status': { type: 'string' },
   'has-gap': { type: 'string' },
   ready: { type: 'string' },
+  action: { type: 'string' },
+  decision: { type: 'string' },
+  'node-id': { type: 'string' },
   confirm: { type: 'boolean' },
   'dry-run': { type: 'boolean' },
   'no-wait': { type: 'boolean' },
@@ -110,6 +113,7 @@ const HELP = `task-board <命令>
   node tracks <ref> [--scope self|subtree]  节点（含子树）分支合并状态聚合
   repo list
   config get
+  audit list [--action release.check|regression.run|requirement.transition|release.item.write] [--decision allowed|denied|confirmed|pending] [--node-id N] [--limit N]
 
 写入（默认 actor=cli，可用 --actor ai|user）
   node upsert --path <path> [--type t] [--name n] [--attr k=v ...] [--dry-run]
@@ -257,6 +261,14 @@ export async function run(argv) {
     case 'schema':
       json(buildSchema(store, cfg))
       break
+    case 'audit list':
+      json(store.listAuditLogs({
+        action: values.action || null,
+        nodeId: values['node-id'] || null,
+        decision: values.decision || null,
+        limit: values.limit ? Number(values.limit) : 100
+      }))
+      break
     case 'node get':
       json({
         ...store.resolveRef(ref),
@@ -321,7 +333,7 @@ export async function run(argv) {
       break
     }
     case 'requirement transition':
-      json(store.transitionRequirement(store.resolveRef(ref).id, { status: values.status, actor: by }))
+      json(store.transitionRequirement(store.resolveRef(ref).id, { status: values.status, actor: by, confirm: !!values.confirm }))
       break
     case 'document overview': {
       // 未知项目与 HTTP / MCP 同口径：走 store.resolveProjectScope 空态，而不是 resolveRef 抛错
@@ -447,7 +459,8 @@ export async function run(argv) {
         agent: values.agent,
         model: values.model,
         cwd: values.cwd,
-        dryRun: !!values['dry-run']
+        dryRun: !!values['dry-run'],
+        confirm: !!values.confirm
       }, by)
       json(await settleCliDispatch(store, out, values))
       break
@@ -560,7 +573,8 @@ export async function run(argv) {
               status: values.status,
               required: values.optional ? 0 : values.required ? 1 : undefined
             },
-            by
+            by,
+            { confirm: !!values.confirm }
           )
         )
       else if (sub === 'update')
@@ -575,10 +589,11 @@ export async function run(argv) {
               status: values.status ?? null,
               required: values.optional ? 0 : values.required ? 1 : null
             },
-            by
+            by,
+            { confirm: !!values.confirm }
           )
         )
-      else if (sub === 'remove') json(store.deleteReleaseItem(Number(arg)))
+      else if (sub === 'remove') json(store.deleteReleaseItem(Number(arg), by, { confirm: !!values.confirm }))
       else if (sub === 'reorder')
         json(store.reorderReleaseItems(store.resolveRef(arg).id, String(values.ids || '').split(',').map((s) => Number(s.trim()))))
       else throw new Error(`release item 支持 list|upsert|update|remove|reorder，收到：${sub}`)
@@ -600,7 +615,8 @@ export async function run(argv) {
         agent: values.agent,
         model: values.model,
         cwd: values.cwd,
-        dryRun: !!values['dry-run']
+        dryRun: !!values['dry-run'],
+        confirm: !!values.confirm
       }, by)
       json(await settleCliDispatch(store, out, values))
       break
