@@ -1,0 +1,4 @@
+# 提交记录：并行派单（test-fanout）
+
+- feat(test-fanout): 回归测试并行派单——runTestCases 新增 fanout 分支（每条用例一个独立 agent 任务 / 独立提示词 / 独立报告，mode=fanout 返回 runs[] + tasks[]），缺省 grouped 保持向后兼容；maxParallel 调用级护栏（缺省 4、上限 16，超出显式拒绝而非静默截断，值域非法一律 VALIDATION_FAILED）；三入口 1:1（HTTP body / CLI --fanout --max-parallel / MCP schema）；CLI settleCliDispatch 升级为等待一组 run 终态；dryRun 只回报任务与逐条提示词、不落库不动 revision；补 test/test-fanout.test.mjs
+- fix(test-fanout): 按独立测试复核修复两处缺陷——① **retry 边界**：store.retryAgentRun 建 child run 后为父 run 关联的每条用例随 child 新开 running 报告（旧结论保留为历史），child 终态由 finalizeReportsForRun 收尾，验收报告按最近一条取到重试结论；普通 agent 任务重试不凭空建报告；「child run + 报告」合并只 +1 revision ② **maxParallel 类型严格性**：normalizeMaxParallel 先卡 `typeof number` 再判 1..16 整数，校验从 fanout 分支提到 runTestCases 开头（grouped 下非法值不再被静默忽略），CLI 补 parseMaxParallelCli（只收规范十进制整数字面量），MCP schema 改 z.unknown() 让非 number 走 handler 统一转 isError + VALIDATION_FAILED（不泄漏 SDK -32602），三入口口径对齐；补 store 级 / 进程级真实 CLI retry 回归 + HTTP / CLI / MCP 非 number 拒绝回归（每条都在旧实现上会失败）

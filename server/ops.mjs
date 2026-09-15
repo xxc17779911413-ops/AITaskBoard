@@ -873,10 +873,38 @@ export async function approveAndMerge(store, nodeRef, { by = 'user' } = {}) {
  * finishTestReport 回写每个报告的 pass/fail（前台执行者或收尾钩子调用）。
  * dryRun 只返回将要执行的用例与提示词，不落库、不派单。
  */
+/** 并行派单的缺省与硬上限：一次 fan-out 最多拉起的 agent 任务数（防止一次调用打爆本机） */
+export const DEFAULT_MAX_PARALLEL = 4
+export const MAX_PARALLEL_LIMIT = 16
+
+/**
+ * 派单执行回归测试用例（三入口共用）。
+ *
+ * 两种模式：
+ * - `grouped`（缺省，向后兼容）：把选中用例拼成**一段**提示词，派**一个** agent 任务，
+ *   为每条用例开一条 running 报告（共用同一个 run_id）。
+ * - `fanout`：用例之间彼此独立，串在一个 CLI 调用里既不并行、任一用例的失败 / 输出
+ *   缺失又会污染同一条输出里的其它结论。fan-out 改为**每条用例一个 agent 任务**，
+ *   各自独立提示词与独立输出，天然并行执行，报告与任务一一对应，收尾解析口径也更干净。
+ *
+ * fan-out 用 `maxParallel` 设护栏（缺省 4，上限 16）：执行器在本进程内异步 spawn，
+ * 没有排队调度器，所以「超出护栏」是**显式拒绝**而不是静默截断——否则多出来的用例
+ * 会以 running 报告留在库里、却永远没人执行（假执行中）。
+ */
 export function runTestCases(
   store,
   nodeRef,
-  { caseIds = null, kind = null, prompt = null, agent = undefined, model = undefined, cwd = null, dryRun = false } = {},
+  {
+    caseIds = null,
+    kind = null,
+    prompt = null,
+    agent = undefined,
+    model = undefined,
+    cwd = null,
+    dryRun = false,
+    fanout = false,
+    maxParallel = null
+  } = {},
   by = 'user'
 ) {
   const node = store.resolveRef(String(nodeRef))
@@ -887,10 +915,21 @@ export function runTestCases(
     throw new AppError(CODES.VALIDATION_FAILED, '没有可执行的测试用例（先 test_case_upsert）', { nodeId: node.id, kind })
   }
   const effectiveKind = kind || cases[0].kind
+
+  // 显式传了 maxParallel 就先严格校验，**不只在 fanout 分支里校验**——
+  // 否则 `fanout:false` 时非法类型会被静默忽略（HTTP 三入口的 `true` / `"4"` / `[1]` 漏洞就在这），
+  // 与「非法值一律 VALIDATION_FAILED，不静默降级」的纪律相悖。
+  const limit = normalizeMaxParallel(maxParallel)
+
+  if (fanout) {
+    return runTestCasesFanout(store, node, cases, { prompt, agent, model, cwd, dryRun, limit }, by)
+  }
+
   const composed = composeTestPrompt(node, cases, prompt)
   if (dryRun) {
     return {
       dryRun: true,
+      mode: 'grouped',
       node: { id: node.id, name: node.name },
       kind: effectiveKind,
       cases: cases.map((c) => ({ id: c.id, name: c.name, kind: c.kind })),
@@ -901,7 +940,89 @@ export function runTestCases(
   const reports = cases.map((c) =>
     store.createTestReport(node.id, { caseId: c.id, runId: run.id, kind: c.kind, status: 'running', summary: `已派单执行：${c.name}` }, by)
   )
-  return { node: { id: node.id, name: node.name }, kind: effectiveKind, run, reports }
+  return { mode: 'grouped', node: { id: node.id, name: node.name }, kind: effectiveKind, run, reports }
+}
+
+/** 并行派单分支：每条用例一个 run + 一条报告；dryRun 只回报将派哪些任务与各自的提示词 */
+function runTestCasesFanout(store, node, cases, { prompt, agent, model, cwd, dryRun, limit }, by) {
+  if (cases.length > limit) {
+    throw new AppError(
+      CODES.VALIDATION_FAILED,
+      `fan-out 一次最多派 ${limit} 条用例，本次选中 ${cases.length} 条——请用 caseIds 收窄范围或调高 maxParallel（上限 ${MAX_PARALLEL_LIMIT}）`,
+      { selected: cases.length, maxParallel: limit, limit: MAX_PARALLEL_LIMIT }
+    )
+  }
+  // 每条用例各自成段提示词：独立任务里只出现这一条用例，收尾解析不会被其它用例干扰。
+  const planned = cases.map((c) => ({
+    case: c,
+    prompt: composeTestPrompt(node, [c], prompt)
+  }))
+  if (dryRun) {
+    return {
+      dryRun: true,
+      mode: 'fanout',
+      node: { id: node.id, name: node.name },
+      maxParallel: limit,
+      cases: cases.map((c) => ({ id: c.id, name: c.name, kind: c.kind })),
+      tasks: planned.map((p) => ({ caseId: p.case.id, name: p.case.name, kind: p.case.kind, prompt: p.prompt }))
+    }
+  }
+  const dispatched = planned.map((p) => {
+    const run = startAgentRun(store, node.id, { prompt: p.prompt, agent, model, cwd }, by)
+    const report = store.createTestReport(
+      node.id,
+      { caseId: p.case.id, runId: run.id, kind: p.case.kind, status: 'running', summary: `已派单执行：${p.case.name}` },
+      by
+    )
+    return { case: { id: p.case.id, name: p.case.name, kind: p.case.kind }, run, report }
+  })
+  return {
+    mode: 'fanout',
+    node: { id: node.id, name: node.name },
+    maxParallel: limit,
+    runs: dispatched.map((d) => d.run),
+    reports: dispatched.map((d) => d.report),
+    tasks: dispatched.map((d) => ({ caseId: d.case.id, name: d.case.name, kind: d.case.kind, runId: d.run.id, reportId: d.report.id }))
+  }
+}
+
+/**
+ * maxParallel 校验：缺省 4；必须是 1..16 的 **number 类型整数**。
+ *
+ * 先卡 `typeof === 'number'` 再判整数值域：早期写法 `Number(value)` 会把 `true` → 1、
+ * `'4'` → 4、`[1]` → 1 这类非法输入隐式放过，而 MCP（zod `z.number()`）/ CLI（`parseArgs`
+ * 的字符串参数）口径不同，三入口就对不上。这里做单点严格校验，三入口一律把原始值透传进来，
+ * 不做任何预转换，保证 HTTP / CLI / MCP 对非 number 输入的行为 1:1。
+ */
+function normalizeMaxParallel(value) {
+  if (value == null) return DEFAULT_MAX_PARALLEL
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > MAX_PARALLEL_LIMIT) {
+    throw new AppError(
+      CODES.VALIDATION_FAILED,
+      `maxParallel 必须是 1..${MAX_PARALLEL_LIMIT} 的整数，收到：${value}`,
+      { maxParallel: value, allowed: { min: 1, max: MAX_PARALLEL_LIMIT } }
+    )
+  }
+  return value
+}
+
+/**
+ * CLI 入口的 maxParallel 解析：argv 天然是文本，`Number()` 会把 `0x10` → 16、
+ * `1e1` → 10、` 4 ` → 4 这类非规范写法悄悄放过，与 HTTP / MCP 的「非 number 一律拒绝」对不上。
+ * 这里只接受**规范的十进制整数字面量**，其余（`1.5` / `true` / `0x10` / `1e1` / 空串）一律
+ * `VALIDATION_FAILED`，再交给 `normalizeMaxParallel` 做值域判定，保证三入口同一把尺子。
+ */
+export function parseMaxParallelCli(text) {
+  if (text == null) return null
+  const raw = String(text)
+  if (!/^\d+$/.test(raw)) {
+    throw new AppError(
+      CODES.VALIDATION_FAILED,
+      `maxParallel 必须是 1..${MAX_PARALLEL_LIMIT} 的整数，收到：${raw}`,
+      { maxParallel: raw, allowed: { min: 1, max: MAX_PARALLEL_LIMIT } }
+    )
+  }
+  return normalizeMaxParallel(Number(raw))
 }
 
 /** 把用例拼成给 agent 的回归提示词：显式列出每条用例的期望，要求逐条给出结论 */

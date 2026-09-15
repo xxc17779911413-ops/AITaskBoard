@@ -4,8 +4,7 @@ import { parseArgs } from 'node:util'
 import { openDb } from './db.mjs'
 import { createStore } from './store.mjs'
 import { loadConfig, saveConfig, maskToken, DB_PATH } from './config.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline, renderTestReportMd } from './ops.mjs'
-import { setupWorkspace, getWorkspacePrompt, cleanupWorkspace } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline, renderTestReportMd, setupWorkspace, getWorkspacePrompt, cleanupWorkspace, parseMaxParallelCli } from './ops.mjs'
 import { startAgentRun, retryAndDispatch, waitForAgentRun } from './agent.mjs'
 import { saveUpload } from './uploads.mjs'
 
@@ -36,6 +35,8 @@ const OPTIONS = {
   optional: { type: 'boolean' },
   'case-ids': { type: 'string' },
   'case-id': { type: 'string' },
+  fanout: { type: 'boolean' },
+  'max-parallel': { type: 'string' },
   'run-id': { type: 'string' },
   enabled: { type: 'string' },
   overwrite: { type: 'boolean' },
@@ -148,6 +149,7 @@ const HELP = `task-board <命令>
   test case reorder <ref> --ids "1,2,3"
   test run <ref> [--kind k] [--case-ids "1,2"] [--prompt "额外要求"] [--dry-run] [--no-wait] [--wait-timeout 秒]
                                     派单执行用例（自动开报告）；默认等到 run 终态并自动收尾报告，--no-wait 只派单
+                                    --fanout 每条用例派独立 agent 任务（并行）; --max-parallel N 设并行护栏（缺省 4，上限 16）
   test report list <ref> [--kind k] [--case-id <id>]      测试报告列表
   test report get <rid> [--format json|md] / test report finish <rid> --status pass|fail|blocked|error|cancelled [--summary s] [--detail d] [--run-id N] [--overwrite]
   test acceptance <ref> [--scope self|subtree] [--format json|md]   验收报告（聚合最近结果）
@@ -257,21 +259,22 @@ function parseEnabled(v) {
  * 返回值会把 run / reports 刷新成收尾后的最新状态。
  */
 async function settleCliDispatch(store, out, values) {
-  if (!out || out.dryRun || !out.run) return out
+  if (!out || out.dryRun) return out
+  const runs = out.mode === 'fanout' ? out.runs || [] : out.run ? [out.run] : []
+  if (runs.length === 0) return out
   // 前台（Qoder IDE）任务设计上就停在 running，等 IDE 回写；在这里等待只会白等到超时。
-  if (out.run.agent === 'qoder-ide') return { ...out, waited: false, foreground: true }
+  if (runs.some((r) => r.agent === 'qoder-ide')) return { ...out, waited: false, foreground: true }
   if (values['no-wait']) return { ...out, waited: false }
   const timeoutSec = values['wait-timeout'] != null ? Number(values['wait-timeout']) : 30 * 60
   const timeoutMs = Number.isFinite(timeoutSec) && timeoutSec > 0 ? timeoutSec * 1000 : 30 * 60 * 1000
-  const run = await waitForAgentRun(store, out.run.id, { timeoutMs })
+  // fan-out 是多个并行任务：逐个等（waitForAgentRun 是纯轮询，不占用 agent 槽位，串行等待不影响并行执行）。
+  const settled = []
+  for (const r of runs) settled.push(await waitForAgentRun(store, r.id, { timeoutMs }))
   const reports = (out.reports || []).map((r) => store.getTestReport(r.id))
-  return {
-    ...out,
-    run,
-    reports,
-    waited: true,
-    waitTimedOut: ['running', 'queued'].includes(run.status)
-  }
+  const timedOut = settled.some((r) => ['running', 'queued'].includes(r.status))
+  return out.mode === 'fanout'
+    ? { ...out, runs: settled, reports, waited: true, waitTimedOut: timedOut }
+    : { ...out, run: settled[0], reports, waited: true, waitTimedOut: timedOut }
 }
 
 export async function run(argv) {
@@ -505,7 +508,11 @@ export async function run(argv) {
         agent: values.agent,
         model: values.model,
         cwd: values.cwd,
-        dryRun: !!values['dry-run']
+        dryRun: !!values['dry-run'],
+        fanout: !!values.fanout,
+        // argv 是文本：由 ops.parseMaxParallelCli 做规范整数字面量校验，
+        // 保证与 HTTP / MCP 一样严格拒绝 `1.5` / `true` / `0x10` / 空串等非 number 输入。
+        maxParallel: parseMaxParallelCli(values['max-parallel'])
       }, by)
       json(await settleCliDispatch(store, out, values))
       break

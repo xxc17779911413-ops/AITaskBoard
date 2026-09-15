@@ -366,6 +366,101 @@ test('run：默认 maxAttempts=3，可重试到 attempt=3 后拒绝', async (t) 
   assert.throws(() => store.retryAgentRun(r3.id), (e) => e.code === 'VALIDATION_FAILED')
 })
 
+// ---------- 重试边界（独立测试缺陷 1）：用例报告必须随 child run 刷新 ----------
+
+function makeTaskWithCase(store) {
+  const { t } = makeTask(store)
+  const c = store.createTestCase(t.id, { name: 'A', prompt: 'p' })
+  return { t, c }
+}
+
+test('重试缺陷1回归：重试为同一用例随 child run 开新 running 报告，旧结论保留为历史', async (t) => {
+  const { tmp, store } = await setup()
+  t.after(() => tmp.cleanup())
+  const { t: task, c } = makeTaskWithCase(store)
+
+  const r1 = store.createAgentRun(task.id, { prompt: 'x', agent: 'echo', cwd: '/tmp' })
+  const rep1 = store.createTestReport(task.id, { caseId: c.id, runId: r1.id, kind: 'regression', status: 'running' })
+  store.finishAgentRun(r1.id, { status: 'failed', failureReason: 'agent_error.nonzero_exit' })
+  assert.equal(store.getTestReport(rep1.id).status, 'error', '父 run 失败 → 报告 error')
+
+  const r2 = store.retryAgentRun(r1.id)
+  const reports = store.listTestReports(task.id, {})
+  assert.equal(reports.length, 2, '重试后应为该用例多开一条报告（旧结论 + 新执行）')
+  const childReport = reports.find((x) => x.runId === r2.id)
+  assert.ok(childReport, '必须存在挂在 child run 上的报告')
+  assert.equal(childReport.status, 'running', 'child 报告初始为 running')
+  assert.equal(childReport.caseId, c.id, '仍绑定同一用例')
+  // 旧报告不被原地改写（保留历史）
+  assert.equal(store.getTestReport(rep1.id).status, 'error')
+})
+
+test('重试缺陷1回归：child run 落终态刷新该用例报告，验收报告取到重试后的结论', async (t) => {
+  const { tmp, store } = await setup()
+  t.after(() => tmp.cleanup())
+  const { t: task, c } = makeTaskWithCase(store)
+
+  const r1 = store.createAgentRun(task.id, { prompt: 'x', agent: 'echo', cwd: '/tmp' })
+  store.createTestReport(task.id, { caseId: c.id, runId: r1.id, kind: 'regression', status: 'running' })
+  store.finishAgentRun(r1.id, { status: 'failed', failureReason: 'agent_error.nonzero_exit' })
+  assert.equal(store.buildAcceptanceReport(task.id).items[0].latestStatus, 'error')
+
+  const r2 = store.retryAgentRun(r1.id)
+  // 模拟 child 重试成功并给出结论
+  store.appendAgentRunOutput(r2.id, 'A: PASS - 重试后恢复\n')
+  store.finishAgentRun(r2.id, { status: 'success', exitCode: 0 })
+
+  const childReport = store.listTestReports(task.id, {}).find((x) => x.runId === r2.id)
+  assert.equal(store.getTestReport(childReport.id).status, 'pass', 'child 报告随 child 终态刷新为 pass')
+  assert.equal(store.getTestReport(childReport.id).autoFinalized, true)
+  // 验收报告按「最近一条」取，落到重试后的结论
+  const acceptance = store.buildAcceptanceReport(task.id)
+  assert.equal(acceptance.items[0].latestStatus, 'pass')
+  assert.equal(acceptance.items[0].latestReportId, childReport.id)
+  assert.equal(acceptance.totals.cases, 1, '仍只有一条用例（不是把历史报告当新用例）')
+})
+
+test('重试缺陷1回归：不带用例报告的普通任务重试不凭空造报告', async (t) => {
+  const { tmp, store } = await setup()
+  t.after(() => tmp.cleanup())
+  const { t: task } = makeTask(store)
+  const r1 = store.createAgentRun(task.id, { prompt: 'p', cwd: '/tmp' })
+  store.finishAgentRun(r1.id, { status: 'failed' })
+  const r2 = store.retryAgentRun(r1.id)
+  assert.equal(r2.attempt, 2)
+  assert.equal(store.listTestReports(task.id, {}).length, 0, '普通 agent 任务重试不建报告')
+})
+
+test('重试缺陷1回归：重试建 child run + 随 child 报告只递增一次 revision', async (t) => {
+  const { tmp, store } = await setup()
+  t.after(() => tmp.cleanup())
+  const { t: task, c } = makeTaskWithCase(store)
+  const r1 = store.createAgentRun(task.id, { prompt: 'x', agent: 'echo', cwd: '/tmp' })
+  store.createTestReport(task.id, { caseId: c.id, runId: r1.id, kind: 'regression', status: 'running' })
+  store.finishAgentRun(r1.id, { status: 'failed' })
+
+  const before = store.getRevision()
+  store.retryAgentRun(r1.id)
+  assert.equal(store.getRevision(), before + 1, '组合写入（child run + 报告）应只 +1')
+})
+
+test('重试缺陷1回归：多条用例共用一条 run（grouped）时，重试为每条用例各开一条 child 报告', async (t) => {
+  const { tmp, store } = await setup()
+  t.after(() => tmp.cleanup())
+  const { t: task } = makeTask(store)
+  const a = store.createTestCase(task.id, { name: 'A', prompt: 'p' })
+  const b = store.createTestCase(task.id, { name: 'B', prompt: 'p' })
+  const r1 = store.createAgentRun(task.id, { prompt: 'x', agent: 'echo', cwd: '/tmp' })
+  store.createTestReport(task.id, { caseId: a.id, runId: r1.id })
+  store.createTestReport(task.id, { caseId: b.id, runId: r1.id })
+  store.finishAgentRun(r1.id, { status: 'failed' })
+
+  const r2 = store.retryAgentRun(r1.id)
+  const childReports = store.listTestReports(task.id, {}).filter((x) => x.runId === r2.id)
+  assert.equal(childReports.length, 2, '两条用例各开一条 child 报告')
+  assert.deepEqual(childReports.map((x) => x.caseId).sort(), [a.id, b.id].sort())
+})
+
 test('run：失败原因分类落库并可查询', async (t) => {
   const { tmp, store } = await setup()
   t.after(() => tmp.cleanup())

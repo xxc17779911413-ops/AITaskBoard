@@ -222,6 +222,101 @@ test('进程级：CLI release check 非 dry-run 收尾到终态并回写检查�
   assert.equal(parsed.reports[0].status, 'pass')
 })
 
+test('进程级：CLI test run --fanout 每条用例一个独立任务，各自收尾到自己的结论', async (t) => {
+  const { tmp, store, task } = await setup()
+  t.after(() => tmp.cleanup())
+  // 两条独立任务各自跑同一个脚本：报告按自己的用例名取结论，
+  // 证明 fan-out 下每条报告只认自己那条结论，不会被另一条带偏。
+  const script = makeAgentScript(t, 'echo "用例A: PASS - 全绿"\necho "用例B: FAIL - 断言挂了"')
+  store.createTestCase(task.id, { name: '用例A', prompt: '跑 A' })
+  store.createTestCase(task.id, { name: '用例B', prompt: '跑 B' })
+  store.db.close()
+
+  const out = await execFileP(process.execPath, [
+    path.resolve(import.meta.dirname, '../bin/taskboard.js'),
+    'test', 'run', 'P/R/S/T',
+    '--agent', script,
+    '--cwd', path.dirname(script),
+    '--fanout'
+  ], { env: { ...process.env, TASKBOARD_HOME: tmp.dir }, encoding: 'utf8' })
+
+  const parsed = JSON.parse(out.stdout)
+  assert.equal(parsed.mode, 'fanout')
+  assert.equal(parsed.waited, true)
+  assert.equal(parsed.runs.length, 2, '两条用例各派一个任务')
+  assert.equal(parsed.reports.length, 2)
+  assert.ok(parsed.runs.every((r) => r.status === 'success'))
+  // 每个 run 只带自己的用例名：fan-out 确实拆开了提示词
+  assert.ok(parsed.runs.every((r) => (r.prompt.match(/用例\d/g) || []).length <= 1))
+  assert.equal(parsed.reports.filter((r) => r.status === 'pass').length, 1)
+  assert.equal(parsed.reports.filter((r) => r.status === 'fail').length, 1)
+  assert.ok(parsed.reports.every((r) => r.autoFinalized === true))
+})
+
+test('进程级：CLI agent run retry 后用例报告随 child run 刷新（缺陷1回归）', async (t) => {
+  const { tmp, store, task } = await setup()
+  t.after(() => tmp.cleanup())
+  // 重试继承父 run 的 agent / cwd，无法换脚本；用「首次失败、二次成功」的同一脚本，
+  // 验证「重试 = 新执行」：报告必须跟到 child run 的结果，而不是停在旧 error。
+  const scriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tb-retry-agent-'))
+  t.after(() => fs.rmSync(scriptDir, { recursive: true, force: true }))
+  const marker = path.join(scriptDir, 'ran-once')
+  const script = path.join(scriptDir, 'agent.sh')
+  fs.writeFileSync(
+    script,
+    [
+      '#!/bin/sh',
+      `if [ ! -f "${marker}" ]; then`,
+      `  touch "${marker}"`,
+      '  echo "第一次执行失败" >&2',
+      '  exit 1',
+      'fi',
+      'echo "登录回归: PASS - 重试后恢复"'
+    ].join('\n') + '\n',
+    { mode: 0o755 }
+  )
+  const c = store.createTestCase(task.id, { name: '登录回归', prompt: '跑 A' })
+  store.db.close()
+
+  // 第一次派单（失败）
+  const first = JSON.parse(
+    (await execFileP(process.execPath, [
+      path.resolve(import.meta.dirname, '../bin/taskboard.js'),
+      'test', 'run', 'P/R/S/T',
+      '--agent', script,
+      '--cwd', scriptDir
+    ], { env: { ...process.env, TASKBOARD_HOME: tmp.dir }, encoding: 'utf8' })).stdout
+  )
+  assert.equal(first.run.status, 'failed')
+  assert.equal(first.reports[0].status, 'error', '首次失败 → 报告 error')
+
+  // 重试：同一脚本这次走成功分支。CLI agent run retry 新建 child run，
+  // （本轮修复后）为用例随 child 开新 running 报告，child 终态再把它收尾。
+  const retried = JSON.parse(
+    (await execFileP(process.execPath, [
+      path.resolve(import.meta.dirname, '../bin/taskboard.js'),
+      'agent', 'run', 'retry', String(first.run.id),
+      '--wait-timeout', '30'
+    ], { env: { ...process.env, TASKBOARD_HOME: tmp.dir }, encoding: 'utf8' })).stdout
+  )
+
+  // 重新打开库核对：用例报告应随 child run 刷新为 pass，且验收报告取到重试结论。
+  const db2 = tmp.openDb()
+  const store2 = tmp.store.createStore(db2)
+  assert.equal(retried.run.status, 'success', '重试的 child run 跑到成功')
+  const childRunId = retried.run.id
+  const reports = store2.listTestReports(task.id, {})
+  assert.equal(reports.length, 2, '旧结论 + 重试执行各一条报告')
+  const child = reports.find((r) => r.runId === childRunId)
+  assert.ok(child, 'child run 上必须有该用例的报告（缺陷1回归点）')
+  assert.equal(child.status, 'pass', 'child 报告随 child 终态刷新')
+  assert.equal(child.caseId, c.id)
+  const acceptance = store2.buildAcceptanceReport(task.id)
+  assert.equal(acceptance.items[0].latestStatus, 'pass', '验收报告取重试后的结论')
+  assert.equal(acceptance.totals.cases, 1, '仍是一条用例')
+  store2.db.close()
+})
+
 test('进程级：CLI --no-wait 保留只派单语义（立即返回 running）', async (t) => {
   const { tmp, store, task } = await setup()
   t.after(() => tmp.cleanup())

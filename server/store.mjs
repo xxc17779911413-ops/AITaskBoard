@@ -2903,24 +2903,51 @@ export function createStore(db, options = {}) {
         { attempt, maxAttempts }
       )
     }
-    return createAgentRun(
-      cur.node_id,
-      {
-        agent: cur.agent,
-        model: cur.model,
-        prompt: cur.prompt,
-        cwd: cur.cwd,
-        sessionId: cur.session_id,
-        runtimeId: cur.runtime_id,
-        attempt: attempt + 1,
-        maxAttempts,
-        parentRunId: cur.id,
-        priority: cur.priority || 0,
-        // 会话已有 CLI 会话号时，重试即续跑同一段对话
-        resumed: !!cur.cli_session_id
-      },
-      by
-    )
+    // 组合写入（建 child run + 随 child 重开用例报告）合并为一次 revision 递增。
+    let child
+    withoutBump(() => {
+      child = createAgentRun(
+        cur.node_id,
+        {
+          agent: cur.agent,
+          model: cur.model,
+          prompt: cur.prompt,
+          cwd: cur.cwd,
+          sessionId: cur.session_id,
+          runtimeId: cur.runtime_id,
+          attempt: attempt + 1,
+          maxAttempts,
+          parentRunId: cur.id,
+          priority: cur.priority || 0,
+          // 会话已有 CLI 会话号时，重试即续跑同一段对话
+          resumed: !!cur.cli_session_id
+        },
+        by
+      )
+      // 重试是**一次新的执行**：父 run 的用例报告不能停在旧结论上。
+      // 为父 run 关联的每条用例随 child run 开一条新的 running 报告——
+      // ① 「一次执行 = 一行」，旧结论作为历史保留（不原地改写）；
+      // ② child run 落终态时 finalizeReportsForRun 会收尾这条 running 报告，用例报告随之刷新；
+      // ③ 验收报告按「最近一条」取结论，自动落到这次重试的结果上。
+      // 若父 run 本就不带用例报告（普通 agent 任务），这里什么也不建。
+      const parentReports = db.prepare('SELECT * FROM test_reports WHERE run_id = ? ORDER BY id').all(cur.id)
+      for (const r of parentReports) {
+        // createAgentRun 返回的是 VO（camelCase），节点字段是 nodeId
+        createTestReport(
+          child.nodeId,
+          {
+            caseId: r.case_id,
+            runId: child.id,
+            kind: r.kind,
+            status: 'running',
+            summary: `重试执行：run #${cur.id} → #${child.id}（第 ${child.attempt} 次）`
+          },
+          by
+        )
+      }
+    })
+    bumpRevision()
+    return child
   }
 
   function getAgentRun(id) {

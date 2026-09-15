@@ -594,7 +594,9 @@ export function createApp({ store }) {
           agent: b.agent,
           model: b.model,
           cwd: b.cwd,
-          dryRun: !!b.dryRun
+          dryRun: !!b.dryRun,
+          fanout: !!b.fanout,
+          maxParallel: b.maxParallel != null ? b.maxParallel : null
         }, actorOf(req))
       )
     })

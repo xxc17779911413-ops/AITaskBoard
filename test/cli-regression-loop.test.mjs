@@ -207,3 +207,46 @@ test('交付门禁：CLI 非法 --scope / --format 返回 VALIDATION_FAILED（CL
     tmp.cleanup()
   }
 })
+
+test('缺陷2回归：CLI --max-parallel 只接受规范十进制整数，其余一律 VALIDATION_FAILED（真实子进程）', async () => {
+  const { tmp, home } = await setup()
+  try {
+    // 先备一条用例，保证失败原因只会是参数校验而不是「没有用例」
+    await cli(home, ['test', 'case', 'upsert', 'P/R', '--name', 'A', '--prompt', 'p'])
+    const cases = await cli(home, ['test', 'case', 'list', 'P/R'])
+    assert.equal(cases.length, 1)
+
+    // 合法值：dry-run 正常返回（走 parseMaxParallelCli → normalizeMaxParallel）
+    const ok = await cli(home, ['test', 'run', 'P/R', '--dry-run', '--fanout', '--max-parallel', '8'])
+    assert.equal(ok.maxParallel, 8)
+
+    // 非法字面量：1.5 / 0x10 / 1e1 / 空串 / 超上限 / 非数字 / 带空白
+    for (const bad of ['1.5', '0x10', '1e1', '', '0', '17', 'true', '4abc', ' 4 ']) {
+      const r = await cliFail(home, ['test', 'run', 'P/R', '--dry-run', '--fanout', '--max-parallel', bad])
+      assert.ok(r, `--max-parallel ${JSON.stringify(bad)} 应当失败`)
+      assert.match(r.stderr, /VALIDATION_FAILED/)
+      assert.match(r.stderr, /maxParallel 必须是 1\.\.16 的整数/)
+    }
+
+    // 负数用 `--max-parallel=-1` 形式：裸 `-1` 会被 node:util parseArgs 在参数层拦成
+    // ERR_PARSE_ARGS_INVALID_OPTION_VALUE（它认为这是另一个选项），到不了业务校验；
+    // 这里验证用 `=` 形式传进去后仍由 maxParallel 校验拦成 VALIDATION_FAILED。
+    const neg = await cliFail(home, ['test', 'run', 'P/R', '--dry-run', '--fanout', '--max-parallel=-1'])
+    assert.ok(neg, '负数应当失败')
+    assert.match(neg.stderr, /VALIDATION_FAILED/)
+  } finally {
+    tmp.cleanup()
+  }
+})
+
+test('缺陷2回归：CLI 非法 --max-parallel 在 grouped（不加 --fanout）下同样拒绝', async () => {
+  const { tmp, home } = await setup()
+  try {
+    await cli(home, ['test', 'case', 'upsert', 'P/R', '--name', 'A', '--prompt', 'p'])
+    const r = await cliFail(home, ['test', 'run', 'P/R', '--dry-run', '--max-parallel', '4x'])
+    assert.ok(r, 'grouped 下非法 maxParallel 也应失败')
+    assert.match(r.stderr, /VALIDATION_FAILED/)
+  } finally {
+    tmp.cleanup()
+  }
+})

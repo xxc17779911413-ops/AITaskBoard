@@ -71,7 +71,7 @@
 | POST | `/api/nodes/:id/test-cases/reorder` | `{orderedIds[]}` 重排用例 |
 | PATCH | `/api/test-cases/:cid` | 更新用例 `{name?, kind?, prompt?, expectation?, enabled?}` |
 | DELETE | `/api/test-cases/:cid` | 删除用例（历史报告保留，`case_id` 置空） |
-| POST | `/api/nodes/:id/test-runs` | 派单执行：`{caseIds?, kind?, prompt?, agent?, model?, cwd?, dryRun?}`；为每条用例开 `running` 报告，返回 `{node, kind, run, reports}`（dryRun 只回用例与提示词）；任务落终态时自动收尾关联报告（见下） |
+| POST | `/api/nodes/:id/test-runs` | 派单执行：`{caseIds?, kind?, prompt?, agent?, model?, cwd?, dryRun?, fanout?, maxParallel?}`。缺省 `grouped` 把选中用例拼成一段提示词、派一个 agent 任务、共用一条 run，返回 `{node, kind, run, reports}`；`fanout=true` 每条用例派**独立任务（并行）**，返回 `{mode:'fanout', runs[], reports[], tasks[]}`。并行护栏 `maxParallel` 必须是 **number 类型的 1..16 整数**（缺省 4）：非 number（`true` / `"4"` / `[1]`）与越界值一律 400 `VALIDATION_FAILED`（不静默降级，`fanout:false` 时同样校验）；选中数超过护栏同样 400（**显式拒绝**，不静默截断以免留下假 running）。dryRun 在两种模式下都只回将派的任务与提示词、不落库不动 revision；任务落终态时自动收尾关联报告（见下）。同族接口 `agent_run_retry` 会为用例随 child run 新开 running 报告，使重试结果刷新到验收口径 |
 | GET | `/api/nodes/:id/test-reports` | 报告列表（倒序）；`?caseId=&kind=&limit=` |
 | GET | `/api/test-reports/:rid` | 单条报告详情；`?format=json\|md`（`md` 返回可贴进 issue / MR 的单条测试报告；非法 `format` → 400 `VALIDATION_FAILED`；**纯读，不动 revision**） |
 | PATCH | `/api/test-reports/:rid` | 回写报告 `{status, summary?, detail?, runId?, overwrite?}`；`running → 终态` 单向，终态同状态幂等；终态互转默认拒绝 `REPORT_STATUS_IMMUTABLE`（409），`overwrite:true` 才覆盖；**自动收尾（`autoFinalized=true`）的终态可无需 `overwrite` 直接改正**；非法 `status` → 400 `VALIDATION_FAILED` |
