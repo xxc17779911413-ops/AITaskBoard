@@ -1845,6 +1845,49 @@ export async function getMergeConflicts(store, mergeId) {
 
 /**
  * 写回冲突处理结果。
+ *
+ * Worktree 写入安全校验（N7）：
+ * 逐级检查目标路径与父目录，拒绝任何已存在的符号链接，并确保 realpath 仍在 worktree 内。
+ * 中间目录若已是 symlink，即使最终 abs 字符串在根内也可能写到外部，因此必须整链检查。
+ */
+function ensureWorktreePathSafe(worktreeDir, rootReal, relativePath) {
+  const rootAbs = path.resolve(worktreeDir)
+  const parts = String(relativePath).split('/').filter((p) => p && p !== '.')
+  let cur = rootAbs
+  for (let i = 0; i < parts.length; i += 1) {
+    const part = parts[i]
+    if (part === '..') {
+      throw new AppError(CODES.VALIDATION_FAILED, `冲突路径越出 worktree：${relativePath}`, { file: relativePath })
+    }
+    cur = path.join(cur, part)
+    let st = null
+    try {
+      st = fs.lstatSync(cur)
+    } catch {
+      st = null
+    }
+    const isLast = i === parts.length - 1
+    if (st && st.isSymbolicLink()) {
+      throw new AppError(CODES.VALIDATION_FAILED, `冲突路径包含符号链接，拒绝写入：${relativePath}`, {
+        file: relativePath,
+        link: cur
+      })
+    }
+    if (isLast && st && st.isDirectory()) {
+      throw new AppError(CODES.VALIDATION_FAILED, `冲突路径是目录，无法写入：${relativePath}`, { file: relativePath })
+    }
+  }
+  const existing = fs.existsSync(cur) ? cur : path.dirname(cur)
+  const real = fs.realpathSync(existing)
+  if (real !== rootReal && !real.startsWith(rootReal + path.sep)) {
+    throw new AppError(CODES.VALIDATION_FAILED, `冲突路径的真实落点越出 worktree：${relativePath}`, {
+      file: relativePath,
+      real
+    })
+  }
+}
+
+/**
  * - `files:[{path, content}]`：每个冲突文件的最终内容
  * - 生成 `patches[]`（当前 conflict 状态 → 最终内容）与 `files[].contentHash`
  * - `writeToWorktree:true` 时写入该仓库的 worktree（要求已登记 worktreePath）
@@ -1905,23 +1948,36 @@ export async function resolveMergeConflicts(store, mergeId, { files = [], writeT
       sourceSha: row.sourceSha
     })
     const patch = await gitUnifiedFilePatch(dir, filePath, before.ours, content)
+    const changed = content !== (before.ours == null ? '' : String(before.ours))
     resolved.push({
       path: filePath,
       content,
       contentHash: createHash('sha1').update(content).digest('hex'),
-      wroteWorktree: false
+      wroteWorktree: false,
+      changed
     })
-    patches.push({ path: filePath, patch, appliesTo: 'target' })
+    patches.push(
+      changed
+        ? { path: filePath, patch, appliesTo: 'target', changed: true }
+        : { path: filePath, patch: '', appliesTo: 'target', changed: false, note: '内容与目标版本一致，无需应用补丁' }
+    )
   }
 
   if (writeToWorktree) {
+    // N7：仅靠 path.resolve + startsWith 的字符串前缀会被符号链接绕过。
+    // 写入前对 worktree 根与目标路径做 realpath/lstat 级校验：
+    // - 目标已存在且是符号链接 → 拒绝（写下去会跟随到外部）
+    // - 父目录链中任一段是符号链接 → 拒绝（中间目录逃逸）
+    // - 最终 realpath 必须仍位于 realpath(worktreeRoot) 之内
+    const rootReal = fs.realpathSync(worktreeDir)
     for (const item of resolved) {
       const abs = path.resolve(worktreeDir, item.path)
-      const root = path.resolve(worktreeDir)
-      if (!abs.startsWith(root + path.sep)) {
+      if (!abs.startsWith(path.resolve(worktreeDir) + path.sep)) {
         throw new AppError(CODES.VALIDATION_FAILED, `冲突路径越出 worktree：${item.path}`, { file: item.path })
       }
+      ensureWorktreePathSafe(worktreeDir, rootReal, item.path)
       fs.mkdirSync(path.dirname(abs), { recursive: true })
+      ensureWorktreePathSafe(worktreeDir, rootReal, item.path)
       fs.writeFileSync(abs, item.content)
       item.wroteWorktree = true
     }

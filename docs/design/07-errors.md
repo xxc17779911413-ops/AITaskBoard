@@ -28,6 +28,8 @@
 | 合并记录确认 / 放弃 | `confirm` 只服务冲突行（可显式回填 `mergeSha`）、`abort` 置 `aborted`；已 `aborted`/`merged` 不可确认、已 `merged` 不可放弃 |
 | 冲突 resolve 文件不完整 / 越出清单 | 400 `VALIDATION_FAILED`（缺文件或 path 不在 `conflict_files` 中，不静默忽略） |
 | 冲突 resolve 写入未登记 worktree | 400 `VALIDATION_FAILED`（`writeToWorktree:true` 但没有 `unit_repos.worktree_path` 或目录不存在） |
+| 冲突 resolve 写入符号链接 / 越界真实路径 | 400 `VALIDATION_FAILED`（`lstat` 拒绝符号链接，`realpath` 复核真实落点仍在 worktree 内；不跟随链接写外部文件） |
+| 冲突 resolve 内容与目标一致 | 200，`changed:false` + `note`；不返回会被 `git apply` 拒绝的空补丁 |
 | 本机 git 不可用 / 命令失败 | 500 `GIT_UNAVAILABLE` / `GIT_FAILED`（`details` 带原始 stderr） |
 | GitLab 未配置 | 400 + 「前往设置页配置」提示 |
 | GitLab 401 / 404 | 502（`details` 区分 token 无效 / 项目路径错误） |

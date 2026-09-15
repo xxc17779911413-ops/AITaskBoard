@@ -439,38 +439,46 @@ export async function conflictDetails(dir, filePath, { baseSha = null, targetSha
  */
 export async function unifiedFilePatch(dir, filePath, before, after) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'taskboard-patch-'))
-  const beforeFile = path.join(tmp, 'before')
-  const afterFile = path.join(tmp, 'after')
+  // 把临时文件放在 a/<path> / b/<path> 结构下，让 git 直接产出正确的 a/、b/ 头，
+  // 避免对 diff 文本做任何「按行前缀」改写——那会误伤以 `-- ` / `++ ` 开头的 hunk 内容（N6）。
+  const beforeFile = path.join(tmp, 'a', filePath)
+  const afterFile = path.join(tmp, 'b', filePath)
+  fs.mkdirSync(path.dirname(beforeFile), { recursive: true })
+  fs.mkdirSync(path.dirname(afterFile), { recursive: true })
   fs.writeFileSync(beforeFile, before == null ? '' : String(before))
   fs.writeFileSync(afterFile, after == null ? '' : String(after))
-  const r = await gitTry(dir, [
-    'diff',
-    '--no-index',
-    '--no-color',
-    '--src-prefix=a/',
-    '--dst-prefix=b/',
-    '--',
-    beforeFile,
-    afterFile
-  ])
+  let r
+  try {
+    // 在 tmp 内运行：相对路径 a/<path> / b/<path> 会原样写进 diff 头。
+    const { stdout } = await execFileP(
+      'git',
+      [
+        '-C',
+        tmp,
+        'diff',
+        '--no-index',
+        '--no-color',
+        '--src-prefix=',
+        '--dst-prefix=',
+        '--',
+        path.join('a', filePath),
+        path.join('b', filePath)
+      ],
+      { maxBuffer: MAX_BUFFER, encoding: 'utf8' }
+    )
+    r = { ok: true, code: 0, stdout }
+  } catch (e) {
+    if (e && e.code === 'ENOENT') {
+      fs.rmSync(tmp, { recursive: true, force: true })
+      throw new AppError(CODES.GIT_UNAVAILABLE, '本机 git 不可用（命令不存在）')
+    }
+    r = { ok: false, code: typeof e.code === 'number' ? e.code : 1, stdout: String((e && e.stdout) || ''), stderr: String((e && (e.stderr || e.message)) || '') }
+  }
   fs.rmSync(tmp, { recursive: true, force: true })
   if (r.code !== 1 && !r.ok) {
     throw new AppError(CODES.GIT_FAILED, `生成补丁失败：${filePath}`, { stderr: String(r.stderr || '').slice(0, 1000) })
   }
-  const lines = String(r.stdout || '').split('\n')
-  const out = []
-  for (const line of lines) {
-    if (line.startsWith('diff --git ')) {
-      out.push(`diff --git a/${filePath} b/${filePath}`)
-    } else if (line.startsWith('--- ')) {
-      out.push(`--- a/${filePath}`)
-    } else if (line.startsWith('+++ ')) {
-      out.push(`+++ b/${filePath}`)
-    } else {
-      out.push(line)
-    }
-  }
-  return out.join('\n')
+  return String(r.stdout || '')
 }
 
 /**

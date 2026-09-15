@@ -25,3 +25,20 @@
 
 冲突处理**不自动改分支**；只有显式「确认合并完成」（`confirm`）才回填 `merge_sha`。
 补丁默认不落盘，仅在用户选择「写入 worktree」时写到 `unit_repos.worktree_path`。
+
+## 关键规则（实现后回填）
+
+**R1 三方内容按记录 sha 读取**：`getMergeConflicts` 使用 `merges` 行里的 `base_sha` /
+`target_sha` / `source_sha` 读取 base / ours / theirs（不是用当前分支 tip 推算）；
+add/add、modify/delete 等缺 stage 的场景如实返回 `null`。
+
+**R2 补丁头只在生成阶段构造，不做文本改写（N6 回归点）**：`unifiedFilePatch` 在临时目录下
+用 `a/<path>` / `b/<path>` 结构生成 diff，并用 `--src-prefix='' --dst-prefix=''`；
+hunk 内容行以 `-- ` / `++ ` 开头也不会被误当头行改写。**禁止**再按行前缀扫描整个 diff。
+
+**R3 worktree 写入必须 realpath/lstat 级校验（N7 回归点）**：只做
+`path.resolve` + `startsWith` 会被符号链接绕过。写入前逐级 `lstat`，拒绝目标或任一父目录
+是符号链接；目标已存在时用 `realpath` 复核真实落点仍在 `realpath(worktreeRoot)` 内。
+
+**R4 无变更时不产出空补丁（N8 回归点）**：resolve 内容若与目标版本一致，
+返回 `changed:false` + `note`，不再给一个下游 `git apply` 会拒绝的空 patch。

@@ -141,6 +141,40 @@ function makeNamedConflict(repo, name) {
   repo.g(['commit', '-q', '-m', `source ${name}`])
 }
 
+function makeNestedConflict(repo, relPath) {
+  const abs = path.join(repo.dir, relPath)
+  fs.mkdirSync(path.dirname(abs), { recursive: true })
+  fs.writeFileSync(abs, 'base\n')
+  repo.g(['add', '-A'])
+  repo.g(['commit', '-q', '-m', `base ${relPath}`])
+  repo.g(['checkout', '-q', 'feature-send-receive'])
+  fs.writeFileSync(abs, 'target\n')
+  repo.g(['add', '-A'])
+  repo.g(['commit', '-q', '-m', `target ${relPath}`])
+  repo.g(['checkout', '-q', 'feature-send-receive-login'])
+  fs.writeFileSync(abs, 'source\n')
+  repo.g(['add', '-A'])
+  repo.g(['commit', '-q', '-m', `source ${relPath}`])
+}
+
+function makeDirConflict(repo, relDir) {
+  const abs = path.join(repo.dir, relDir, 'a.txt')
+  fs.mkdirSync(path.dirname(abs), { recursive: true })
+  fs.writeFileSync(abs, 'base\n')
+  repo.g(['add', '-A'])
+  repo.g(['commit', '-q', '-m', `base ${relDir}`])
+  repo.g(['checkout', '-q', 'feature-send-receive'])
+  fs.mkdirSync(path.dirname(abs), { recursive: true })
+  fs.writeFileSync(abs, 'target\n')
+  repo.g(['add', '-A'])
+  repo.g(['commit', '-q', '-m', `target ${relDir}`])
+  repo.g(['checkout', '-q', 'feature-send-receive-login'])
+  fs.mkdirSync(path.dirname(abs), { recursive: true })
+  fs.writeFileSync(abs, 'source\n')
+  repo.g(['add', '-A'])
+  repo.g(['commit', '-q', '-m', `source ${relDir}`])
+}
+
 test('store merges：状态机 CRUD 与 state 校验', async (t) => {
   const { tmp, store, task } = await setup({ withRepo: false })
   t.after(() => tmp.cleanup())
@@ -320,7 +354,7 @@ test('conflict：三方详情读取 + resolve 产出可 apply 的统一补丁（
   assert.equal(out.files[0].contentHash, createHash('sha1').update(content).digest('hex'))
   assert.equal(repo.g(['rev-parse', 'feature-send-receive']).trim(), beforeTarget, 'resolve 不得改分支')
   assert.deepEqual(store.getMerge(mid).resolvedFiles, [
-    { path: 'a.txt', content, contentHash: out.files[0].contentHash, wroteWorktree: false }
+    { path: 'a.txt', content, contentHash: out.files[0].contentHash, wroteWorktree: false, changed: true }
   ])
 
   // 补丁面向 target 版本生成；checkout target 后应能直接 git apply。
@@ -364,6 +398,89 @@ test('conflict：resolve 可写入已登记的 worktree；未登记 worktree 时
     ops.resolveMergeConflicts(store, run2.conflicts[0]?.id || mid, { files: [{ path: 'a.txt', content: 'x\n' }], writeToWorktree: true }),
     (e) => e.code === 'VALIDATION_FAILED'
   )
+})
+
+test('N6 回归：内容行以 `-- ` / `++ ` 开头时补丁仍可 apply 且不写坏', async (t) => {
+  for (const [fixture, content] of [
+    ['-- target comment\n', '-- resolved comment\n'],
+    ['++ target note\n', '++ resolved note\n']
+  ]) {
+    const { tmp, store, ops, repo, task } = await setup()
+    t.after(() => {
+      tmp.cleanup()
+      fs.rmSync(repo.root, { recursive: true, force: true })
+    })
+    repo.g(['checkout', '-q', 'feature-send-receive'])
+    fs.writeFileSync(path.join(repo.dir, 'a.txt'), fixture)
+    repo.g(['add', '.'])
+    repo.g(['commit', '-q', '-m', 'target fixture'])
+    repo.g(['checkout', '-q', 'feature-send-receive-login'])
+    fs.writeFileSync(path.join(repo.dir, 'a.txt'), 'source\n')
+    repo.g(['add', '.'])
+    repo.g(['commit', '-q', '-m', 'source fixture'])
+
+    const run = await ops.runMerge(store, task.id, { confirm: true })
+    const out = await ops.resolveMergeConflicts(store, run.conflicts[0].id, { files: [{ path: 'a.txt', content }] })
+    repo.g(['checkout', '-q', 'feature-send-receive'])
+    fs.writeFileSync(path.join(repo.dir, 'a.txt'), fixture)
+    const patchFile = path.join(repo.root, 'n6.patch')
+    fs.writeFileSync(patchFile, out.patches[0].patch)
+    repo.g(['apply', '--check', patchFile])
+    repo.g(['apply', patchFile])
+    assert.equal(fs.readFileSync(path.join(repo.dir, 'a.txt'), 'utf8'), content)
+  }
+})
+
+test('N7 回归：worktree 内目标 / 父目录为符号链接时拒绝写入，外部文件不被覆盖', async (t) => {
+  for (const kind of ['target', 'parent']) {
+    const { tmp, store, ops, repo, task } = await setup()
+    t.after(() => {
+      tmp.cleanup()
+      fs.rmSync(repo.root, { recursive: true, force: true })
+    })
+    if (kind === 'target') makeConflict(repo)
+    else makeDirConflict(repo, 'dir')
+    const run = await ops.runMerge(store, task.id, { confirm: true })
+    const wt = path.join(repo.root, `wt-${kind}`)
+    const { addWorktree } = await import('../server/git.mjs')
+    repo.g(['branch', `holder-${kind}`, 'feature-send-receive'])
+    await addWorktree(repo.dir, { worktreePath: wt, branch: `holder-${kind}`, baseBranch: 'feature-send-receive' })
+    store.updateUnitRepo(store.listUnitRepos(task.id)[0].id, { worktreePath: wt })
+
+    const outside = path.join(repo.root, `outside-${kind}.txt`)
+    fs.writeFileSync(outside, 'SAFE\n')
+    if (kind === 'target') {
+      fs.rmSync(path.join(wt, 'a.txt'))
+      fs.symlinkSync(outside, path.join(wt, 'a.txt'))
+      await assert.rejects(
+        ops.resolveMergeConflicts(store, run.conflicts[0].id, { files: [{ path: 'a.txt', content: 'PWNED\n' }], writeToWorktree: true }),
+        (e) => e.code === 'VALIDATION_FAILED'
+      )
+    } else {
+      fs.rmSync(path.join(wt, 'dir'), { recursive: true, force: true })
+      fs.symlinkSync(path.dirname(outside), path.join(wt, 'dir'))
+      await assert.rejects(
+        ops.resolveMergeConflicts(store, run.conflicts[0].id, { files: [{ path: 'dir/a.txt', content: 'PWNED\n' }], writeToWorktree: true }),
+        (e) => e.code === 'VALIDATION_FAILED'
+      )
+    }
+    assert.equal(fs.readFileSync(outside, 'utf8'), 'SAFE\n', '外部文件不得被改写')
+  }
+})
+
+test('N8：resolve 内容与目标一致时 changed=false，不返回会被误 apply 的空补丁', async (t) => {
+  const { tmp, store, ops, repo, task } = await setup()
+  t.after(() => {
+    tmp.cleanup()
+    fs.rmSync(repo.root, { recursive: true, force: true })
+  })
+  makeConflict(repo)
+  const run = await ops.runMerge(store, task.id, { confirm: true })
+  const out = await ops.resolveMergeConflicts(store, run.conflicts[0].id, { files: [{ path: 'a.txt', content: 'target\n' }] })
+  assert.equal(out.files[0].changed, false)
+  assert.equal(out.patches[0].changed, false)
+  assert.equal(out.patches[0].patch, '')
+  assert.match(out.patches[0].note, /无需应用补丁/)
 })
 
 test('ops merge：缺 confirm / 分支缺失 / 类型非法给稳定错误码', async (t) => {
