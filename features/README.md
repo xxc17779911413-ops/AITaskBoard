@@ -57,6 +57,7 @@
 | **研发主线思维导图**（需求 → 设计/文档 → 回归 → 报告 → 验收 → 上线治理的只读图投影） | `workflow-map/` | — | server/{store,ops}.mjs（buildWorkflowMap）+ 三入口 workflow_map + NodeDrawer「主线」页签（WorkflowMapPane） |
 | **交付门禁**（需求就绪 / 测试验收 / 上线治理 / 代码推送的最终汇总，纯读聚合不落表） | `delivery-gate/` | — | server/{store,ops}.mjs（buildDeliveryGate / buildDeliveryGateFull）+ 三入口 delivery_gate + NodeDrawer「交付」页签 |
 | **代码推送门禁**（已登记提交是否真的到了远程：`pushed`/`not_pushed`/`unknown` 三态 + 子树聚合，纯读不 fetch） | `commit-push-gate/` | — | server/git.mjs（commitPushState）+ server/ops.mjs（getNodePushGate/renderPushGateMd）+ 三入口 commit_push_gate |
+| **并行派单**（回归用例 fan-out：每条用例一个独立 agent 任务，`maxParallel` 护栏） | `test-fanout/` | — | server/ops.mjs（runTestCases 的 fanout 分支）+ 三入口 test_run 的 `fanout`/`maxParallel` |
 
 ### 已实现但**不设独立目录**（语义并入上述目录，避免索引重复）
 
