@@ -117,7 +117,7 @@
 | POST | `/api/nodes/:id/release-items/reorder` | `{orderedIds[]}` 重排上线项 |
 | PATCH | `/api/release-items/:rid` | 更新上线项 `{name?, kind?, content?, rollback?, status?, required?}` |
 | DELETE | `/api/release-items/:rid` | 删除上线项 |
-| GET | `/api/nodes/:id/release-checklist` | 上线检查清单：`?scope=self\|subtree`，`?format=json\|md`（md 直接贴上线单）|
+| GET | `/api/nodes/:id/release-checklist` | 上线检查清单：`?scope=self\|subtree`，`?format=json\|md`（md 直接贴上线单）。就绪 = 必做项全部 `done`/`skipped` **且** 所有启用中的 `code_check`/`biz_check`/`release_check` 用例最近结论为 `pass`；`running`/`not_run` 都不算证据；**既无必做项也无检查用例时 `ready=null`**（不伪造成就绪）。输出含 `blockers`（必做项）与 `caseBlockers`（检查用例，带 `latestStatus`/`latestReportId`）|
 | POST | `/api/nodes/:id/release-checks` | 派单上线前置检查：`{caseIds?, scope?, prompt?, agent?, model?, cwd?, dryRun?}`；按 scope（`self`/`subtree`）挑 `code_check`/`biz_check`/`release_check` 用例，为每条开 `running` 报告（dryRun 只回清单与提示词） |
 
 ### agent 运行时 / 会话 / 任务

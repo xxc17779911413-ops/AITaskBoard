@@ -1538,12 +1538,23 @@ export async function cleanupWorkspace(store, nodeRef, { confirm = false, remove
 export function renderReleaseChecklistMd(checklist) {
   const t = checklist.totals
   const kindLabels = { config: '上线配置', sql: '上线 SQL', check: '上线检查' }
+  const caseKindLabels = { code_check: '代码检查', biz_check: '业务检查', release_check: '上线检查' }
+  const caseStatusLabels = {
+    pass: '通过',
+    fail: '未通过',
+    blocked: '阻塞',
+    error: '错误',
+    cancelled: '已取消',
+    running: '执行中',
+    not_run: '未执行'
+  }
   const lines = [
     `# 上线检查：${checklist.node.name}`,
     '',
     `- 范围：${checklist.scope === 'subtree' ? '含子树' : '仅本节点'}`,
     `- 上线项：${t.items} · 必做：${t.required} · 可选：${t.optional} · 完成：${t.done} · 跳过：${t.skipped} · 阻塞：${t.blocked} · 待处理：${t.pending}`,
-    `- 上线就绪：${checklist.ready == null ? '—（无必做项）' : checklist.ready ? '是' : '否'}`,
+    `- 检查用例：${t.checkCases ?? 0} · 通过：${t.checkPass ?? 0} · 未通过：${(t.checkBlocking ?? 0) - (t.checkRunning ?? 0) - (t.checkNotRun ?? 0)} · 执行中：${t.checkRunning ?? 0} · 未执行：${t.checkNotRun ?? 0}`,
+    `- 上线就绪：${checklist.ready == null ? '—（无必做项与检查用例）' : checklist.ready ? '是' : '否'}`,
     ''
   ]
   if (checklist.blockers.length > 0) {
@@ -1551,11 +1562,28 @@ export function renderReleaseChecklistMd(checklist) {
     for (const b of checklist.blockers) lines.push(`| ${b.name} | ${kindLabels[b.kind] || b.kind} | ${b.status} |`)
     lines.push('')
   }
+  if ((checklist.caseBlockers || []).length > 0) {
+    lines.push('## 检查用例阻塞项', '', '| 检查用例 | 类型 | 最近结论 |', '|---|---|---|')
+    for (const c of checklist.caseBlockers) {
+      lines.push(
+        `| ${c.name} | ${caseKindLabels[c.kind] || c.kind} | ${caseStatusLabels[c.latestStatus] || c.latestStatus} |`
+      )
+    }
+    lines.push('')
+  }
   lines.push('## 上线项明细', '', '| 上线项 | 类型 | 状态 | 必做 | 回滚 |', '|---|---|---|---|---|')
   for (const i of checklist.items) {
     lines.push(
       `| ${i.name} | ${kindLabels[i.kind] || i.kind} | ${i.status} | ${i.required ? '是' : '否'} | ${i.rollback ? '有' : '—'} |`
     )
+  }
+  if ((checklist.checkCases || []).length > 0) {
+    lines.push('', '## 检查用例明细', '', '| 检查用例 | 类型 | 最近结论 | 报告 |', '|---|---|---|---|')
+    for (const c of checklist.checkCases) {
+      lines.push(
+        `| ${c.name} | ${caseKindLabels[c.kind] || c.kind} | ${caseStatusLabels[c.latestStatus] || c.latestStatus} | ${c.latestReportId ?? '—'} |`
+      )
+    }
   }
   return lines.join('\n')
 }
@@ -1576,9 +1604,11 @@ export function runReleaseChecks(
   // 与 release_checklist 的 scope 口径对齐，避免「子树有上线项却没进检查」的误解。
   const effectiveScope = store.normalizeScope(scope)
   const checkNodeIds = effectiveScope === 'subtree' ? store.subtreeIds(node.id) : [node.id]
+  // 与 buildReleaseChecklist 共用同一份值域：清单里算作检查证据的用例，就是这里会被派单的用例。
+  const checkKinds = store.RELEASE_CHECK_CASE_KINDS
   const checks = checkNodeIds
     .flatMap((nid) => store.listTestCases(nid, {}))
-    .filter((c) => c.kind === 'code_check' || c.kind === 'biz_check' || c.kind === 'release_check')
+    .filter((c) => checkKinds.has(c.kind))
     .filter((c) => (caseIds && caseIds.length ? caseIds.map(Number).includes(c.id) : true))
   const checklist = store.buildReleaseChecklist(node.id, { scope: effectiveScope })
   if (checks.length === 0 && checklist.items.length === 0) {

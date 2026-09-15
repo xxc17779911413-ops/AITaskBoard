@@ -18,7 +18,14 @@
 - R3 状态值域 `pending / ready / done / blocked / skipped`，必做项只有 `done` / `skipped` 才不算阻塞。
 - R4 按名 `upsert` 幂等（与文档 / 测试用例 upsert 语义一致）：已存在则更新内容与状态，返回 `created` 标记。
 - R5 上线检查清单：按节点（`self` / `subtree`）聚合上线项的完成度、按类型分布、就绪结论与阻塞项；
-  必做项全部完成才 `ready=true`；**无必做项时 `ready=null`**（不用 `false` 冒充未就绪）。
+  必做项全部完成**且登记在册的检查用例最近结论全部 pass** 才 `ready=true`；
+  **既无必做项也无检查用例时 `ready=null`**（不用 `false` 冒充未就绪）。
+- R5a 检查用例纳入就绪判定：`code_check` / `biz_check` / `release_check` 三类启用中的用例是上线就绪的证据。
+  `running`（已派单未回写）与 `not_run`（从未执行）都**不是**可交付证据；最近一次结论非 `pass` 即阻塞上线。
+  停用用例不算证据（既不被派单也不阻塞）。用例与清单共用同一份值域（`store.RELEASE_CHECK_CASE_KINDS`），
+  避免「清单说就绪、派单却挑不到同一批用例」的口径漂移。
+- R5b 阻塞项分两类：`blockers`（必做上线项）与 `caseBlockers`（检查用例，带 `latestStatus` / `latestReportId`）；
+  清单同时返回 `checkCases` 明细与 `totals.check*` 分桶，便于调用方直接生成待办。
 - R6 上线前置检查执行：把上线清单 + 已登记的 `code_check` / `biz_check` / `release_check` 用例拼成提示词派单给 agent，
   并为每条检查用例开 `running` 报告；`dryRun` 只回将要检查的内容，不派单、不落库。
 - R7 审计：所有写入 `revision` +1，并记录 `created_by` / `updated_by`（user / ai / cli / import / mcp）。
@@ -33,6 +40,8 @@
 
 - `test/release-item.test.mjs`：上线项 CRUD、按名唯一与 upsert 幂等、`kind` / `status` 筛选、`includeOptional`、
   排序、随节点级联删除、revision 语义；清单聚合（就绪结论、阻塞项、无必做项 `ready=null`、`scope=subtree`、`blocked` 计数）；
+  **检查用例纳入就绪判定**（必做项全 done 但用例未执行 → `ready=false`；用例 pass 后才就绪；失败/running/未执行均阻塞；
+  停用用例不阻塞；`scope=subtree` 纳入子树用例；纯读不产生 revision）；
   编排层 `dryRun`（拼清单 + 只挑 code/biz/release_check 用例、caseIds 过滤）与 markdown 渲染。
 - `test/http.test.mjs`：全链路（upsert → 清单 → 回写 done → 就绪）、重名 409 `RELEASE_ITEM_NAME_EXISTS`、dryRun、清单 md。
 - `test/run-finalize.test.mjs`：`release check` 非 dry-run 的**进程级**收尾（真实 CLI 子进程 → run 终态 + 检查报告回写）；

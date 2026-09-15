@@ -694,6 +694,39 @@ test('上线治理：清单 md 输出可贴进上线单', async () => {
   tmp.cleanup()
 })
 
+test('上线治理：必做项 done 但检查用例未执行 → 清单未就绪（假绿灯全链路回归）', async () => {
+  const { tmp, store, post, get, patch, close } = await setup()
+  const p = await post('/api/nodes', { type: 'project', name: 'P' })
+  const r = await post('/api/nodes', { parentId: p.id, type: 'requirement', name: 'R' })
+
+  const item = await post(`/api/nodes/${r.id}/release-items/upsert`, { name: '执行上线 SQL', kind: 'sql' })
+  await patch(`/api/release-items/${item.id}`, { status: 'done' })
+  const lint = await post(`/api/nodes/${r.id}/test-cases/upsert`, { name: '静态检查', prompt: '跑 lint', kind: 'code_check' })
+
+  // 旧实现：必做项全 done → ready=true，检查用例被忽略
+  const blocked = await get(`/api/nodes/${r.id}/release-checklist`)
+  assert.equal(blocked.ready, false)
+  assert.equal(blocked.totals.checkNotRun, 1)
+  assert.equal(blocked.caseBlockers[0].name, '静态检查')
+
+  // 通过既有报告回写接口写入 pass → 清单恢复就绪
+  const report = store.createTestReport(r.id, { caseId: lint.id, kind: 'code_check', status: 'running' })
+  await patch(`/api/test-reports/${report.id}`, { status: 'pass', summary: '无告警' })
+  const ready = await get(`/api/nodes/${r.id}/release-checklist`)
+  assert.equal(ready.ready, true)
+  assert.deepEqual(ready.caseBlockers, [])
+
+  // 检查用例同样是交付证据：未执行时 delivery-gate 不可交付
+  const report2 = store.createTestReport(r.id, { caseId: lint.id, kind: 'code_check', status: 'running' })
+  await patch(`/api/test-reports/${report2.id}`, { status: 'fail', summary: 'lint 报错', overwrite: true })
+  const gate = await get(`/api/nodes/${r.id}/delivery-gate`)
+  assert.equal(gate.decision, 'not_ready')
+  assert.ok(gate.blockers.some((b) => b.source === 'release' && b.name === '静态检查'))
+
+  await close()
+  tmp.cleanup()
+})
+
 // ---------- 需求就绪门禁（需求管理闭环的前置判定） ----------
 
 test('就绪门禁：全链路（未就绪 → 补文档 + 用例 → 就绪）', async () => {

@@ -518,6 +518,10 @@ curl -s -X PATCH http://127.0.0.1:3210/api/release-items/1 \
 curl -s 'http://127.0.0.1:3210/api/nodes/1/release-checklist?scope=subtree'
 curl -s 'http://127.0.0.1:3210/api/nodes/1/release-checklist?format=md'
 
+# 就绪口径：必做项全部 done/skipped，且所有启用中的 code_check / biz_check / release_check
+# 用例最近结论为 pass；running / not_run 都不算证据。既无必做项也无检查用例时 ready=null。
+# 响应里 blockers=必做上线项，caseBlockers=检查用例（带 latestStatus / latestReportId）。
+
 # 上线前置检查：挑 code_check / biz_check / release_check 用例派单；dryRun 只回提示词
 curl -s -X POST http://127.0.0.1:3210/api/nodes/1/release-checks \
   -H 'content-type: application/json' -d '{"dryRun":true}'

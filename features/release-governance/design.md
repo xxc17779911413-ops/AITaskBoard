@@ -26,8 +26,32 @@
 按 `(node_id, name)` 唯一，`created` 标记让调用方知道是新建还是覆盖。
 
 **R4 就绪口径**：只有**必做项**（`required=1`）参与就绪判定，且必须落在 `done` / `skipped`；
-可选未完成不影响 `ready`。无必做项时 `ready=null`（与验收报告 `passRate=null` 同口径，避免「没有项 = 未就绪」误判）。
+可选未完成不影响 `ready`。**既无必做项也无检查用例**时 `ready=null`
+（与验收报告 `passRate=null` 同口径，避免「没有项 = 未就绪」误判）。检查用例的部分见 R4.4。
 `blocked` 单列在 `totals.blocked` 且必然出现在 `blockers` 里。
+
+**R4.4 检查用例也是就绪证据（假绿灯修复）**：上线治理把「代码检查 / 业务检查 / 上线检查」的**执行**
+放在 `test_cases` 的 `code_check` / `biz_check` / `release_check` 三类用例上（R1）。因此
+`buildReleaseChecklist` 的就绪判定 = **必做项全部 done/skipped** **且** **所有启用中的检查用例最近结论为 `pass`**。
+
+早期实现只扫 `release_items`，于是「必做上线项都 done」会给出 `ready=true`，而登记在册、从未执行
+（`not_run`）或已经失败（`fail`）的检查用例被静默忽略——这是独立测试发现的**假绿灯**：
+调用方带着没跑过的代码检查去上线。
+
+口径细节（与 `acceptance` / `delivery-gate` 同源，不再另立一套）：
+
+- 只用**最近一次**报告（一次执行 = 一行），避免历史 `pass` 掩盖后来 `fail`；
+- `running`（已派单未回写）与 `not_run`（从未执行）**都不是**可交付证据；
+- 停用用例（`enabled=0`）既不被派单也不阻塞——与 `readiness` 的「可回归用例」口径一致；
+- 空态判定必须同时看两侧：**既无必做项、也无检查用例**才是 `ready=null`；只登记检查用例就已产生可判定对象；
+- 输出拆成 `blockers`（必做上线项）与 `caseBlockers`（检查用例，带 `latestStatus` / `latestReportId`），
+  并给 `totals.check*`（`checkCases` / `checkPass` / `checkRunning` / `checkNotRun` / `checkBlocking`）分桶与 `byCaseKind`。
+- **与验收报告的证据重叠是有意的**：`buildAcceptanceReport` 不分 `kind`，所以同一条检查用例也会出现在
+  验收分桶里；上线清单再单独把它作为「上线就绪」证据看一遍。两处口径相同（都只认 `pass`），
+  因此不会出现一个说通过、另一个说未过的矛盾，只是同一份证据支撑两个不同结论（测没测完 / 能不能上线）。
+
+值域单点定义：`store.RELEASE_CHECK_CASE_KINDS` 同时被清单聚合与 `runReleaseChecks` 派单使用，
+避免「清单说就绪、派单却挑不到同一批用例」的口径漂移。
 
 **R4.1 `done` 与 `skipped` 分开计数**：两者对就绪的效力相同（都算不必再处理），但含义不同。
 `totals` 同时给 `done` 与 `skipped`，Markdown 摘要写「完成：N · 跳过：M」——

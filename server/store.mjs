@@ -89,6 +89,13 @@ const REQUIREMENT_TRANSITIONS = {
 const DEFAULT_REQUIREMENT_STATUSES = Object.keys(REQUIREMENT_TRANSITIONS)
 
 /**
+ * 上线前置检查的**执行**复用 `test_cases` 的 kind 扩展轴：代码检查 / 业务检查 / 上线检查三类用例。
+ * 上线清单聚合（`buildReleaseChecklist`）与派单编排（`runReleaseChecks`）共用这一份值域，
+ * 避免「清单说就绪、派单却挑不到同一批用例」的口径漂移。
+ */
+export const RELEASE_CHECK_CASE_KINDS = new Set(['code_check', 'biz_check', 'release_check'])
+
+/**
  * 解析 agent 输出里的逐条测试结论。
  * 契约来自 ops.composeTestPrompt / composeReleaseCheckPrompt：
  *   `<用例名>: PASS|FAIL|BLOCKED - <依据>`
@@ -2133,6 +2140,13 @@ export function createStore(db, options = {}) {
   /**
    * 上线检查（release readiness）：按节点（self / subtree）汇总上线清单的完成度。
    * 与验收报告同口径——只统计必做项（required）为阻塞项，可选项单列；空清单时 ready=null。
+   *
+   * 只读聚合，不写库、不 bump revision：结论随源数据实时变化。
+   *
+   * 检查执行结论（check cases）：上线治理把「代码检查 / 业务检查 / 上线检查」的**执行**放在
+   * test_cases 的 code_check / biz_check / release_check 三类用例上（见 features/release-governance/design.md R1）。
+   * 因此本清单必须把已登记的这三类用例纳入就绪判定——否则「必做上线项都 done」会得到 ready=true，
+   * 而登记在册、从未执行或已失败的检查用例被静默忽略（假绿灯）。
    */
   function buildReleaseChecklist(nodeId, { scope = 'self' } = {}) {
     const root = rawNode(nodeId)
@@ -2143,6 +2157,37 @@ export function createStore(db, options = {}) {
       .prepare(`SELECT * FROM release_items WHERE node_id IN (${ph}) ORDER BY node_id, sort, id`)
       .all(...ids)
       .map(releaseItemVO)
+    // 检查用例：与 runReleaseChecks 挑用例的口径一致——三类一起纳入（含子树）。
+    // 只算启用中的用例：停用的检查既不会被派单，也不该阻塞上线（与 readiness 口径一致）。
+    const checkCases = db
+      .prepare(`SELECT * FROM test_cases WHERE node_id IN (${ph}) AND enabled = 1 ORDER BY node_id, sort, id`)
+      .all(...ids)
+      .map(testCaseVO)
+      .filter((c) => RELEASE_CHECK_CASE_KINDS.has(c.kind))
+    const reports = db
+      .prepare(`SELECT * FROM test_reports WHERE node_id IN (${ph}) ORDER BY id DESC`)
+      .all(...ids)
+      .map(testReportVO)
+    // 每个用例只取最近一次报告：一次执行 = 一行，最近那行代表当前结论。
+    const latestByCase = new Map()
+    for (const r of reports) {
+      if (r.caseId == null) continue
+      if (!latestByCase.has(r.caseId)) latestByCase.set(r.caseId, r)
+    }
+    const cases = checkCases.map((c) => {
+      const latest = latestByCase.get(c.id) || null
+      return {
+        id: c.id,
+        nodeId: c.nodeId,
+        name: c.name,
+        kind: c.kind,
+        latestStatus: latest ? latest.status : 'not_run',
+        latestReportId: latest ? latest.id : null
+      }
+    })
+    // 判定口径与 acceptance / delivery-gate 同源：只有 pass 才算通过；
+    // running（已派单未回写）与 not_run（从未执行）都不是可交付证据。
+    const blockingCases = cases.filter((c) => c.latestStatus !== 'pass')
     const requiredItems = items.filter((i) => i.required)
     const optionalItems = items.filter((i) => !i.required)
     const pending = items.filter((i) => i.status === 'pending' || i.status === 'ready')
@@ -2150,6 +2195,13 @@ export function createStore(db, options = {}) {
     const pendingRequired = requiredItems.filter((i) => i.status !== 'done' && i.status !== 'skipped')
     const byKind = {}
     for (const i of items) byKind[i.kind] = (byKind[i.kind] || 0) + 1
+    const byCaseKind = {}
+    for (const c of cases) byCaseKind[c.kind] = (byCaseKind[c.kind] || 0) + 1
+    // 就绪 = 必做上线项全部完成/跳过 **且** 所有检查用例最近结论为 pass。
+    // 无必做项且无检查用例时是空态 ready=null（不用 false 冒充未就绪）。
+    // 只要存在检查用例，就已有可判定对象，因此空态判定必须同时看两侧。
+    const hasJudgement = requiredItems.length > 0 || cases.length > 0
+    const caseReady = cases.length === 0 || blockingCases.length === 0
     return {
       node: { id: root.id, name: root.name, type: root.type },
       scope: effectiveScope,
@@ -2162,10 +2214,17 @@ export function createStore(db, options = {}) {
         // 只报 done 会让「必做项都是 skipped」显示成「已完成：0」，看起来像没做完。
         skipped: items.filter((i) => i.status === 'skipped').length,
         blocked: blocked.length,
-        pending: pending.length
+        pending: pending.length,
+        // 检查用例分桶（最近一次结论）：与验收报告同口径，running / notRun 单列。
+        checkCases: cases.length,
+        checkPass: cases.filter((c) => c.latestStatus === 'pass').length,
+        checkRunning: cases.filter((c) => c.latestStatus === 'running').length,
+        checkNotRun: cases.filter((c) => c.latestStatus === 'not_run').length,
+        checkBlocking: blockingCases.length
       },
       byKind,
-      ready: requiredItems.length === 0 ? null : pendingRequired.length === 0,
+      byCaseKind,
+      ready: hasJudgement ? pendingRequired.length === 0 && caseReady : null,
       blockers: pendingRequired.map((i) => ({
         id: i.id,
         nodeId: i.nodeId,
@@ -2173,7 +2232,17 @@ export function createStore(db, options = {}) {
         kind: i.kind,
         status: i.status
       })),
-      items
+      // 检查用例阻塞项单列：让调用方直接从 caseBlockers 生成待办，不必再遍历 cases。
+      caseBlockers: blockingCases.map((c) => ({
+        id: c.id,
+        nodeId: c.nodeId,
+        name: c.name,
+        kind: c.kind,
+        latestStatus: c.latestStatus,
+        latestReportId: c.latestReportId
+      })),
+      items,
+      checkCases: cases
     }
   }
 
@@ -2265,10 +2334,15 @@ export function createStore(db, options = {}) {
       applicable: release.ready != null,
       detail:
         release.ready == null
-          ? '当前范围没有必做上线项'
+          ? '当前范围没有必做上线项也没有检查用例'
           : release.ready
-            ? `${release.totals.required} 个必做上线项已完成或跳过`
-            : `${release.blockers.length} 个必做上线项仍待处理或阻塞`,
+            ? `${release.totals.required} 个必做上线项已完成或跳过${release.totals.checkCases ? `，${release.totals.checkPass}/${release.totals.checkCases} 条检查用例通过` : ''}`
+            : [
+                release.blockers.length ? `${release.blockers.length} 个必做上线项仍待处理或阻塞` : null,
+                release.totals.checkBlocking ? `${release.totals.checkBlocking} 条检查用例未通过或未执行` : null
+              ]
+                .filter(Boolean)
+                .join('，'),
       evidence: release
     })
 
@@ -2306,6 +2380,15 @@ export function createStore(db, options = {}) {
       } else if (source.key === 'release' && source.evidence) {
         for (const b of source.evidence.blockers) {
           blockers.push({ source: source.key, label: source.label, name: b.name, detail: `上线项状态：${b.status}` })
+        }
+        // 检查用例（code / biz / release_check）也是上线就绪的证据，未 pass 时必须一并阻塞。
+        for (const c of source.evidence.caseBlockers || []) {
+          blockers.push({
+            source: source.key,
+            label: source.label,
+            name: c.name,
+            detail: `检查用例（${c.kind}）最近结论：${c.latestStatus}`
+          })
         }
       }
     }
@@ -3282,6 +3365,7 @@ export function createStore(db, options = {}) {
     updateReleaseItem,
     deleteReleaseItem,
     reorderReleaseItems,
+    RELEASE_CHECK_CASE_KINDS,
     buildReleaseChecklist,
     // 交付门禁（汇总需求就绪 / 验收 / 上线结论）
     buildDeliveryGate,

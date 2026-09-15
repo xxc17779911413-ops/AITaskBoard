@@ -437,8 +437,13 @@ index：`idx_test_reports_node(node_id, id)`、`idx_test_reports_case(case_id, i
 
 **上线检查清单**不落表，由 `buildReleaseChecklist` 按节点（`self` / `subtree`）聚合：
 完成度 + 按类型分布 + 就绪结论 `ready` + 阻塞项 `blockers`。
-只有必做项全部落在 `done` / `skipped` 才 `ready=true`；**无必做项时 `ready=null`**
+只有必做项全部落在 `done` / `skipped`（`required`），**且所有启用中的
+`code_check` / `biz_check` / `release_check` 用例最近结论为 `pass`**，才 `ready=true`；
+**既无必做项也无检查用例时 `ready=null`**
 （与验收报告 `passRate=null` 同口径，避免「没有项 = 未就绪」误判）。
+
+检查用例的部分拆在 `blockers`（必做上线项）之外的 `caseBlockers`（带 `latestStatus` / `latestReportId`），
+并给 `totals.check*` 与 `byCaseKind` 分桶；`running`（已派单未回写）与 `not_run`（从未执行）都不是可交付证据。
 
 **执行语义复用 `test_cases` 的 kind 扩展轴**：`code_check` / `biz_check` / `release_check` 三类用例
 经 `runReleaseChecks` 拼提示词派单给 agent（复用 agent 运行时），与 `release_items` 的清单一起进上线单；

@@ -158,6 +158,121 @@ test('release_checklist：blocked 状态计入 totals.blocked', async (t) => {
   assert.equal(checklist.ready, false)
 })
 
+// ---------- 检查用例纳入上线就绪判定（假绿灯回归） ----------
+//
+// 每次改动先写出「在旧实现上会失败」的用例：旧实现只看 release_items，
+// 必做项全 done 就报 ready=true，哪怕登记的 code_check 从未执行、或最近一次已经 FAIL。
+
+test('release_checklist：必做项全完成但登记的 code_check 从未执行 → 未就绪（旧实现会假绿）', async (t) => {
+  const { tmp, store, r } = await setup()
+  t.after(() => tmp.cleanup())
+  store.createReleaseItem(r.id, { name: '执行上线 SQL', kind: 'sql', status: 'done' })
+  const lint = store.createTestCase(r.id, { name: '静态检查', prompt: '跑 lint', kind: 'code_check' })
+  const checklist = store.buildReleaseChecklist(r.id)
+  assert.equal(checklist.ready, false)
+  assert.equal(checklist.blockers.length, 0)
+  assert.equal(checklist.totals.checkCases, 1)
+  assert.equal(checklist.totals.checkNotRun, 1)
+  assert.equal(checklist.totals.checkBlocking, 1)
+  assert.equal(checklist.caseBlockers.length, 1)
+  assert.equal(checklist.caseBlockers[0].id, lint.id)
+  assert.equal(checklist.caseBlockers[0].latestStatus, 'not_run')
+})
+
+test('release_checklist：检查用例最近一次 pass 后才就绪；失败重新阻塞', async (t) => {
+  const { tmp, store, r } = await setup()
+  t.after(() => tmp.cleanup())
+  store.createReleaseItem(r.id, { name: '执行上线 SQL', kind: 'sql', status: 'done' })
+  const lint = store.createTestCase(r.id, { name: '静态检查', prompt: '跑 lint', kind: 'code_check' })
+  const report = store.createTestReport(r.id, { caseId: lint.id, kind: 'code_check', status: 'running' })
+  store.finishTestReport(report.id, { status: 'pass', summary: '无告警' })
+  assert.equal(store.buildReleaseChecklist(r.id).ready, true)
+  assert.deepEqual(store.buildReleaseChecklist(r.id).caseBlockers, [])
+
+  // 再跑一次失败：最近结论翻转，就绪必须跟着翻转（不能被上一条 pass 掩盖）
+  const second = store.createTestReport(r.id, { caseId: lint.id, kind: 'code_check', status: 'running' })
+  store.finishTestReport(second.id, { status: 'fail', summary: '2 处 lint 错误' })
+  const checklist = store.buildReleaseChecklist(r.id)
+  assert.equal(checklist.ready, false)
+  assert.equal(checklist.caseBlockers[0].latestStatus, 'fail')
+  assert.equal(checklist.caseBlockers[0].latestReportId, second.id)
+})
+
+test('release_checklist：running 的检查用例不算通过（派单未回写不假绿）', async (t) => {
+  const { tmp, store, r } = await setup()
+  t.after(() => tmp.cleanup())
+  store.createReleaseItem(r.id, { name: '执行上线 SQL', kind: 'sql', status: 'done' })
+  const biz = store.createTestCase(r.id, { name: '下单回归', prompt: '跑下单', kind: 'biz_check' })
+  store.createTestReport(r.id, { caseId: biz.id, kind: 'biz_check', status: 'running' })
+  const checklist = store.buildReleaseChecklist(r.id)
+  assert.equal(checklist.ready, false)
+  assert.equal(checklist.totals.checkRunning, 1)
+  assert.equal(checklist.caseBlockers[0].latestStatus, 'running')
+})
+
+test('release_checklist：只有检查用例、没有必做上线项时也有可判定结论（不再是空态 null）', async (t) => {
+  const { tmp, store, r } = await setup()
+  t.after(() => tmp.cleanup())
+  // 无可判定对象（无必做项且无检查用例）→ 空态
+  assert.equal(store.buildReleaseChecklist(r.id).ready, null)
+  store.createReleaseItem(r.id, { name: '可选监控', kind: 'check', required: 0 })
+  assert.equal(store.buildReleaseChecklist(r.id).ready, null)
+  // 登记检查用例后即产生可判定对象：未执行 → false
+  const rel = store.createTestCase(r.id, { name: '上线冒烟', prompt: '跑冒烟', kind: 'release_check' })
+  assert.equal(store.buildReleaseChecklist(r.id).ready, false)
+  const report = store.createTestReport(r.id, { caseId: rel.id, kind: 'release_check', status: 'running' })
+  store.finishTestReport(report.id, { status: 'pass', summary: '通过' })
+  assert.equal(store.buildReleaseChecklist(r.id).ready, true)
+})
+
+test('release_checklist：停用的检查用例既不被派单也不阻塞上线', async (t) => {
+  const { tmp, store, r } = await setup()
+  t.after(() => tmp.cleanup())
+  store.createReleaseItem(r.id, { name: '执行上线 SQL', kind: 'sql', status: 'done' })
+  store.createTestCase(r.id, { name: '已停用检查', prompt: '不再跑', kind: 'code_check', enabled: 0 })
+  const checklist = store.buildReleaseChecklist(r.id)
+  assert.equal(checklist.totals.checkCases, 0)
+  assert.equal(checklist.ready, true)
+})
+
+test('release_checklist：scope=subtree 纳入子树的检查用例并阻塞本节点', async (t) => {
+  const { tmp, store, r, s } = await setup()
+  t.after(() => tmp.cleanup())
+  store.createReleaseItem(r.id, { name: 'R 的上线 SQL', kind: 'sql', status: 'done' })
+  store.createTestCase(s.id, { name: '子树静态检查', prompt: '跑 lint', kind: 'code_check' })
+  // self 只管本节点，看不到子树的检查用例
+  assert.equal(store.buildReleaseChecklist(r.id, { scope: 'self' }).ready, true)
+  // subtree 必须纳入
+  const subtree = store.buildReleaseChecklist(r.id, { scope: 'subtree' })
+  assert.equal(subtree.ready, false)
+  assert.equal(subtree.totals.checkCases, 1)
+  assert.equal(subtree.caseBlockers[0].nodeId, s.id)
+})
+
+test('release_checklist：检查用例纳入后仍是纯读聚合，不产生 revision', async (t) => {
+  const { tmp, store, r } = await setup()
+  t.after(() => tmp.cleanup())
+  store.createReleaseItem(r.id, { name: '执行上线 SQL', kind: 'sql', status: 'done' })
+  store.createTestCase(r.id, { name: '静态检查', prompt: '跑 lint', kind: 'code_check' })
+  const before = store.getRevision()
+  store.buildReleaseChecklist(r.id)
+  store.buildReleaseChecklist(r.id, { scope: 'subtree' })
+  assert.equal(store.getRevision(), before)
+})
+
+test('release_checklist：markdown 输出检查用例阻塞项', async (t) => {
+  const { tmp, store, r } = await setup()
+  t.after(() => tmp.cleanup())
+  store.createReleaseItem(r.id, { name: '执行上线 SQL', kind: 'sql', status: 'done' })
+  store.createTestCase(r.id, { name: '静态检查', prompt: '跑 lint', kind: 'code_check' })
+  const { renderReleaseChecklistMd } = await import('../server/ops.mjs')
+  const md = renderReleaseChecklistMd(store.buildReleaseChecklist(r.id))
+  assert.ok(md.includes('上线就绪：否'))
+  assert.ok(md.includes('## 检查用例阻塞项'))
+  assert.ok(md.includes('| 静态检查 | 代码检查 | 未执行 |'))
+  assert.ok(md.includes('## 检查用例明细'))
+})
+
 // ---------- 编排层（上线前置检查 dryRun / 提示词 / markdown） ----------
 
 test('runReleaseChecks：无上线项且无检查用例时报错', async (t) => {

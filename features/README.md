@@ -35,7 +35,7 @@
 | 网页 → IDEA 打开 diff（IDE 桥） | `ide-bridge/` | — | server/store.mjs（ide_requests）+ DiffPane/NodeDrawer |
 | 重复检测与一键去重（+ 需求分支标注） | `duplicates/` | — | server/ops.mjs（getNodeDuplicates）+ NodeDrawer |
 | **回归测试闭环**（AI 可回归测试用例 + 测试/验收报告 + 验收签收 + 提示词派单） | `regression-loop/` | — | server/{db,store,ops}.mjs（test_cases/test_reports/acceptance_signoffs）+ 三入口 test_* |
-| **上线治理**（上线配置 / 上线 SQL / 上线检查清单 + agent 前置检查派单） | `release-governance/` | — | server/{db,store,ops}.mjs（release_items）+ 三入口 release_* |
+| **上线治理**（上线配置 / 上线 SQL / 上线检查清单 + agent 前置检查派单；就绪 = 必做项完成 **且** 检查用例 `pass`） | `release-governance/` | — | server/{db,store,ops}.mjs（release_items + 检查用例聚合）+ 三入口 release_* |
 | **需求就绪门禁**（需求内容 / 概要设计 / 可回归用例三条门禁 + 子树汇总，纯读聚合不落表） | `requirement-readiness/` | — | server/{config,store,ops}.mjs（buildRequirementReadiness）+ 三入口 readiness |
 | **概要设计大纲 / 思维导图**（从需求树推导 mermaid 脑图 + 逐层小节，一键写入「概要设计」文档） | `design-outline/` | — | server/{store,ops}.mjs（buildDesignOutline / applyDesignOutline）+ 三入口 design outline/apply + NodeDrawer「概要设计」页签 |
 | **需求思维导图**（树 → mermaid mindmap 只读投影 + 深度截断 + 三入口 1:1 + 抽屉「导图」页签） | `requirement-mindmap/` | — | server/{store,ops}.mjs（buildMindmap）+ 三入口 mindmap + web/src/components/MindmapPane.vue |
