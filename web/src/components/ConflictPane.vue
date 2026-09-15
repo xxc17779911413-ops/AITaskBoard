@@ -77,7 +77,15 @@
 import { ref, computed, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api.js'
-import { applySaved, buildInitialMap, payloadFiles as buildPayload, setDeleted as setFileDeleted, statusOf, switchTo } from './conflict-state.js'
+import {
+  applySaved,
+  buildInitialMap,
+  commitCurrent,
+  payloadFiles as buildPayload,
+  setDeleted as setFileDeleted,
+  statusOf,
+  switchTo
+} from './conflict-state.js'
 
 const props = defineProps({ visible: Boolean, mergeId: [Number, String] })
 const emit = defineEmits(['update:visible', 'resolved'])
@@ -143,7 +151,9 @@ function selectFile(path) {
 
 function setDelete(deleted) {
   if (!currentFile.value) return
-  resolvedMap.value = setFileDeleted(resolvedMap.value, currentFile.value, deleted)
+  // N12：进入删除/保留前先把当前编辑器草稿收回到 map，否则「编辑 → 采纳删除 → 保留内容」会丢失刚输入的草稿。
+  const committed = commitCurrent(resolvedMap.value, currentFile.value, editContent.value)
+  resolvedMap.value = setFileDeleted(committed, currentFile.value, deleted)
   resetEditor()
 }
 

@@ -10,3 +10,4 @@
 - fix(conflict-resolution): 收口 N10/N10b——① **N10（严重）** 单侧缺失补丁不再按整份 patch 行前缀改写，改为只归一首个 `@@` 之前的头区，new-file 内容首行 `++ ` / delete-file 内容首行 `-- ` 不再写坏 ② **N10b** resolve 新增显式删除表达 `{delete:true}` / `{content:null}`，产出 delete-file 补丁并落 `deleted:true`；`content:''` 仍表示保留空文件；三入口 schema / 文档同步
 - feat(conflict-resolution): 前端 `ConflictPane.vue` 落地——抽屉检测 `precheck_conflict` → 打开三方内容面板，支持逐文件编辑 / 采纳删除，调用同一 resolve / confirm / abort API；二进制补丁边界显式化（`patches[].binary=true` + note，提醒走写回 / 删除而非 apply）
 - fix(conflict-resolution): 收口 N11——ConflictPane 编辑状态抽出 `conflict-state.js`：切文件前回收当前编辑到 `resolvedMap`，`handled` 显式区分未处理与已处理为空，「采纳删除 → 保留内容」恢复删除前草稿而非空串；补「编辑 A → 切 B → 写回」「编辑 → 采纳删除 → 保留内容 → 写回」「未处理 vs 已处理为空」三条多文件回归
+- fix(conflict-resolution): 收口 N12——`setDelete` 进入删除/保留态前先 `commitCurrent` 回收当前编辑器草稿；回归从空 map / 未回收草稿起跑，模拟组件真实调用序列，避免再次只锁模块语义

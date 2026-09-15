@@ -20,6 +20,7 @@
   - `conflicts` 回归（N10）：单侧缺失补丁只归一头部——new-file 内容首行 `++ `、delete-file 内容首行 `-- ` 均 apply 后逐字节正确；resolve 用 `delete:true` / `content:null` 表达删除时产出 delete-file 补丁，`content:''` 仍为保留空文件
   - `conflicts` 二进制边界：含 NUL 的冲突文件 resolve 后 `patches[].binary=true` 且带写回指引；内容写回本身成功；前端 `ConflictPane` 作为 `npm run build` 覆盖面
   - `conflict-pane-state`：多文件编辑流纯状态回归——编辑 A → 切 B → 写回时 A 保留未保存编辑；编辑 → 采纳删除 → 保留内容 → 写回时恢复删除前内容而非空串；`handled` 把「未处理」与「已处理为空」区分开
+  - `conflict-pane-state` 回归（N12）：`setDelete` 前必须先 `commitCurrent`；用例从空 map / 未回收草稿起跑，显式断言「不回收会回落 target、先回收才能恢复草稿」，锁住组件真实调用序列
   - `merge-integration`：`merges` 状态机 CRUD 与 state 校验；真 git 下 `precheckMerge` **只读**（冲突时 `merge-tree` exit=1 也能解析出冲突文件，不改目标/源分支）；`runMerge` 无冲突 `merge --no-ff` 落 `merged` + `merge_sha`、重复调用幂等、成功后恢复发起前 HEAD；冲突落 `precheck_conflict` 且不改分支；缺 `confirm` / 分支缺失 / 非工作单元类型给稳定错误码
   - `merge-integration` 回归（N2–N4）：冲突清单按 `merge-tree --name-only -z` 的 NUL 分隔解析——`conflict.txt` / `ConflictPane.vue` / `Auto-merging.md` 前缀型命名不被误删，`中文.txt` 原样 UTF-8 落库；`merged`/`aborted` 行拒绝 `confirm`、未显式给 `mergeSha` 不拿 `target_sha` 冒充；从第三分支发起合并成功后 HEAD 恢复到原分支
   - `merge-integration` 回归（N5）：detached HEAD 发起合并时用 `rev-parse HEAD` 记录具体 sha、用 `symbolic-ref -q HEAD` 判定 detached；成功后 `checkout --detach <sha>` 恢复，`restoredHead` 报该 sha

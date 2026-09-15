@@ -72,3 +72,7 @@ API，不另写前端专属业务逻辑。
 `web/src/components/conflict-state.js`：切换文件前先 `commitCurrent()` 把当前编辑器内容写回
 `resolvedMap`；未处理项回落真实 ours/theirs，已处理为空保留空串（`handled` 标记与 content 区分）；
 「采纳删除」保留删除前草稿，点「保留内容」恢复该草稿而不是读已被清空的编辑器。
+
+**R8.2 状态切换入口都必须先回收草稿（N12 回归点）**：`selectFile` 与 `setDelete` 都是状态切换入口——
+`setDelete(true/false)` 前也必须先 `commitCurrent(map, currentFile, editContent)`，再执行删除/保留变换。
+回归必须从空 map / 未回收草稿起跑，模拟组件真实调用序列，不能预设 `draft` 已存在。
