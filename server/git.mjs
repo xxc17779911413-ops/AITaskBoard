@@ -457,7 +457,7 @@ export async function unifiedFilePatch(dir, filePath, before, after) {
       '/dev/null'
     ])
     fs.rmSync(tmp, { recursive: true, force: true })
-    return normalizeNewDeletePatch(String(r.stdout || ''), filePath)
+    return normalizePatchHeaderRegion(String(r.stdout || ''), filePath)
   }
   // 新建语义：before 为 null / '' 表示目标侧文件不存在。
   if (beforeMissing) {
@@ -475,7 +475,7 @@ export async function unifiedFilePatch(dir, filePath, before, after) {
       path.join('b', filePath)
     ])
     fs.rmSync(tmp, { recursive: true, force: true })
-    return normalizeNewDeletePatch(String(r.stdout || ''), filePath)
+    return normalizePatchHeaderRegion(String(r.stdout || ''), filePath)
   }
   // 把临时文件放在 a/<path> / b/<path> 结构下，让 git 直接产出正确的 a/、b/ 头，
   // 避免对 diff 文本做任何「按行前缀」改写——那会误伤以 `-- ` / `++ ` 开头的 hunk 内容（N6）。
@@ -536,10 +536,16 @@ async function runGitDiffNoIndex(cwd, args) {
   }
 }
 
-/** 归一 new-file / delete-file 补丁的 a/ b/ 前缀（只处理头行，不动 hunk 内容）。 */
-function normalizeNewDeletePatch(patch, filePath) {
+/**
+ * 只归一 `@@` 之前的头区；hunk 区逐字节保留。
+ * 单侧缺失的补丁也必须遵守这一约束：内容行可能以 `++ ` / `-- ` 开头（N10）。
+ */
+function normalizePatchHeaderRegion(patch, filePath) {
   const lines = String(patch || '').split('\n')
-  const out = lines.map((line) => {
+  const hunkAt = lines.findIndex((line) => line.startsWith('@@'))
+  const headerEnd = hunkAt === -1 ? lines.length : hunkAt
+  const out = lines.map((line, idx) => {
+    if (idx >= headerEnd) return line
     if (line.startsWith('diff --git ')) return `diff --git a/${filePath} b/${filePath}`
     if (line.startsWith('--- ') && !line.includes('/dev/null')) return `--- a/${filePath}`
     if (line.startsWith('+++ ') && !line.includes('/dev/null')) return `+++ b/${filePath}`

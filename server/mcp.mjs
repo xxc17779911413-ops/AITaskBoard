@@ -758,10 +758,16 @@ export function createMcpServer({ store }) {
 
   server.tool(
     'merge_resolve',
-    '写回冲突处理结果：files:[{path, content}]；返回 contentHash 与可 git apply 的 unified patch；可选写入 worktree',
+    '写回冲突处理结果：files:[{path, content}] 或 {path, delete:true} 表示删除；返回 contentHash 与可 git apply 的 unified patch；可选写入 worktree',
     {
       id: z.union([z.number(), z.string()]),
-      files: z.array(z.object({ path: z.string(), content: z.string() })),
+      files: z.array(
+        z.object({
+          path: z.string(),
+          content: z.string().nullable().optional(),
+          delete: z.boolean().optional()
+        })
+      ),
       writeToWorktree: z.boolean().optional()
     },
     mcpValidate(async ({ id, files, writeToWorktree }) => {

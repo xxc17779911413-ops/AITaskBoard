@@ -354,7 +354,7 @@ test('conflict：三方详情读取 + resolve 产出可 apply 的统一补丁（
   assert.equal(out.files[0].contentHash, createHash('sha1').update(content).digest('hex'))
   assert.equal(repo.g(['rev-parse', 'feature-send-receive']).trim(), beforeTarget, 'resolve 不得改分支')
   assert.deepEqual(store.getMerge(mid).resolvedFiles, [
-    { path: 'a.txt', content, contentHash: out.files[0].contentHash, wroteWorktree: false, changed: true }
+    { path: 'a.txt', content, contentHash: out.files[0].contentHash, wroteWorktree: false, changed: true, deleted: false }
   ])
 
   // 补丁面向 target 版本生成；checkout target 后应能直接 git apply。
@@ -547,6 +547,70 @@ test('N9b 回归：target 删除文件后 resolve 写回 → 生成 new-file 补
   repo.g(['apply', '--check', patchFile])
   repo.g(['apply', patchFile])
   assert.equal(fs.readFileSync(path.join(repo.dir, 'a.txt'), 'utf8'), 'recreated\n')
+})
+
+test('N10 回归：单侧缺失补丁只归一头部——new-file 首行 `++ ` 不被写坏', async (t) => {
+  const { tmp, store, ops, repo, task } = await setup()
+  t.after(() => {
+    tmp.cleanup()
+    fs.rmSync(repo.root, { recursive: true, force: true })
+  })
+  repo.g(['checkout', '-q', 'feature-send-receive'])
+  fs.rmSync(path.join(repo.dir, 'a.txt'))
+  repo.g(['add', '-A'])
+  repo.g(['commit', '-q', '-m', 'delete a'])
+  repo.g(['checkout', '-q', 'feature-send-receive-login'])
+  fs.writeFileSync(path.join(repo.dir, 'a.txt'), 'source\n')
+  repo.g(['add', '.'])
+  repo.g(['commit', '-q', '-m', 'modify a'])
+
+  const run = await ops.runMerge(store, task.id, { confirm: true })
+  const content = '++ marker\nbody\n'
+  const out = await ops.resolveMergeConflicts(store, run.conflicts[0].id, { files: [{ path: 'a.txt', content }] })
+  repo.g(['checkout', '-q', 'feature-send-receive'])
+  const patchFile = path.join(repo.root, 'n10new.patch')
+  fs.writeFileSync(patchFile, out.patches[0].patch)
+  repo.g(['apply', '--check', patchFile])
+  repo.g(['apply', patchFile])
+  assert.equal(fs.readFileSync(path.join(repo.dir, 'a.txt'), 'utf8'), content, 'new-file apply 后必须逐字节等于 resolve 内容')
+})
+
+test('N10 回归：delete-file 首行 `-- ` 不被写坏且可 apply', async (t) => {
+  const { tmp, store, ops, repo, task } = await setup()
+  t.after(() => {
+    tmp.cleanup()
+    fs.rmSync(repo.root, { recursive: true, force: true })
+  })
+  makeConflict(repo)
+  const run = await ops.runMerge(store, task.id, { confirm: true })
+  // content:null 表示采纳删除
+  const out = await ops.resolveMergeConflicts(store, run.conflicts[0].id, { files: [{ path: 'a.txt', content: null }] })
+  assert.match(out.patches[0].patch, /^deleted file mode /m)
+  assert.match(out.patches[0].patch, /^\+\+\+ \/dev\/null$/m)
+  repo.g(['checkout', '-q', 'feature-send-receive'])
+  const patchFile = path.join(repo.root, 'n10del.patch')
+  fs.writeFileSync(patchFile, out.patches[0].patch)
+  repo.g(['apply', '--check', patchFile])
+  repo.g(['apply', patchFile])
+  assert.equal(fs.existsSync(path.join(repo.dir, 'a.txt')), false, 'delete-file apply 后文件应被删除')
+})
+
+test('N10b：resolve 显式删除表达（delete:true / content:null）产出 delete-file 补丁', async (t) => {
+  for (const form of ['delete', 'null']) {
+    const { tmp, store, ops, repo, task } = await setup()
+    t.after(() => {
+      tmp.cleanup()
+      fs.rmSync(repo.root, { recursive: true, force: true })
+    })
+    makeConflict(repo)
+    const run = await ops.runMerge(store, task.id, { confirm: true })
+    const file = form === 'delete' ? { path: 'a.txt', delete: true } : { path: 'a.txt', content: null }
+    const out = await ops.resolveMergeConflicts(store, run.conflicts[0].id, { files: [file] })
+    assert.equal(out.files[0].deleted, true, `${form} 应记录 deleted=true`)
+    assert.equal(out.files[0].contentHash, null)
+    assert.equal(out.patches[0].changed, true)
+    assert.match(out.patches[0].patch, /^deleted file mode /m)
+  }
 })
 
 test('ops merge：缺 confirm / 分支缺失 / 类型非法给稳定错误码', async (t) => {

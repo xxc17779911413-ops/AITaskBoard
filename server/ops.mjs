@@ -1921,7 +1921,13 @@ export async function resolveMergeConflicts(store, mergeId, { files = [], writeT
         conflictFiles: [...conflictSet]
       })
     }
-    incoming.set(filePath, f.content == null ? '' : String(f.content))
+    // N10b：显式删除表达。delete:true 或 content:null 表示「采纳删除」，
+    // 与 content:''（保留空文件）语义严格区分。
+    const deleted = f.delete === true || f.content === null
+    incoming.set(filePath, {
+      deleted,
+      content: deleted ? null : String(f.content == null ? '' : f.content)
+    })
   }
   const missing = (row.conflictFiles || []).filter((f) => !incoming.has(f))
   if (missing.length) {
@@ -1944,7 +1950,8 @@ export async function resolveMergeConflicts(store, mergeId, { files = [], writeT
   const resolved = []
   const patches = []
   for (const filePath of row.conflictFiles || []) {
-    const content = incoming.get(filePath)
+    const incomingFile = incoming.get(filePath)
+    const content = incomingFile.deleted ? null : incomingFile.content
     // 以 target 版本为「当前」基线生成补丁；git apply 到目标分支后即为最终内容。
     const before = await gitConflictDetails(dir, filePath, {
       baseSha: row.baseSha,
@@ -1952,13 +1959,16 @@ export async function resolveMergeConflicts(store, mergeId, { files = [], writeT
       sourceSha: row.sourceSha
     })
     const patch = await gitUnifiedFilePatch(dir, filePath, before.ours, content)
-    const changed = content !== (before.ours == null ? '' : String(before.ours))
+    const changed = incomingFile.deleted
+      ? before.ours != null
+      : content !== (before.ours == null ? '' : String(before.ours))
     resolved.push({
       path: filePath,
       content,
-      contentHash: createHash('sha1').update(content).digest('hex'),
+      contentHash: incomingFile.deleted ? null : createHash('sha1').update(content).digest('hex'),
       wroteWorktree: false,
-      changed
+      changed,
+      deleted: incomingFile.deleted
     })
     patches.push(
       changed
@@ -1982,7 +1992,11 @@ export async function resolveMergeConflicts(store, mergeId, { files = [], writeT
       ensureWorktreePathSafe(worktreeDir, rootReal, item.path)
       fs.mkdirSync(path.dirname(abs), { recursive: true })
       ensureWorktreePathSafe(worktreeDir, rootReal, item.path)
-      fs.writeFileSync(abs, item.content)
+      if (item.deleted) {
+        fs.rmSync(abs, { force: true })
+      } else {
+        fs.writeFileSync(abs, item.content)
+      }
       item.wroteWorktree = true
     }
   }

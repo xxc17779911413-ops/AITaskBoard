@@ -50,3 +50,12 @@ hunk 内容行以 `-- ` / `++ ` 开头也不会被误当头行改写。**禁止*
 「目标存在 → 内容变更」「目标不存在（`before === null`）→ 新建」「目标被删除（`after === null`）→ 删除」。
 单侧缺失时生成 git 原生 new-file / delete-file 补丁（`--- /dev/null` + `new file mode` 或
 `deleted file mode`），使 `git apply` 能在目标分支真实文件缺失时成功应用。
+
+**R5.1 单侧缺失也只归一头部（N10 回归点）**：即使 new-file / delete-file 补丁需要把 git 原生
+`--- a.txt` / `+++ b/a.txt` 头归一到 `a/<path>` / `b/<path>`，也只能改写首个 `@@` 之前的头区；
+hunk 区逐字节保留。禁止对整份 patch 做行前缀匹配——那会再次把内容行 `++ ` / `-- `（diff 样例、
+补丁片段）误当头行，造成静默写坏。
+
+**R6 删除意图必须可表达且三入口一致（N10b 回归点）**：resolve 用 `{path, delete:true}` 或
+`{path, content:null}` 表示「采纳删除」；`content:''` 仍表示「保留空文件」。删除分支写 `deleted:true`、
+`content:null`、`contentHash:null` 并产出 delete-file 补丁；`writeToWorktree:true` 时删除 worktree 内目标文件。
