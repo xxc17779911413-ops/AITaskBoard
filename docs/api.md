@@ -393,6 +393,8 @@ curl -s -X POST http://127.0.0.1:3210/api/nodes/9/cleanup \
 # node bin/taskboard.js merge precheck "项目A/需求1/任务1" [--repo <名>]
 # node bin/taskboard.js merge run "项目A/需求1/任务1" --confirm [--repo <名>]
 # node bin/taskboard.js merge list --status precheck_conflict
+# node bin/taskboard.js conflict show <mergeId>
+# node bin/taskboard.js conflict resolve <mergeId> --file resolve.json [--write-worktree]
 # node bin/taskboard.js merge confirm <mergeId> [--merge-sha <sha>]
 # node bin/taskboard.js merge abort <mergeId>
 # MCP: merge_precheck / merge_run / merge_list / merge_confirm / merge_abort
@@ -428,6 +430,23 @@ HTTP / MCP 传 `removeBranch: false`、CLI 传 `--keep-branch` 可显式保留�
 冲突清单按 `merge-tree --name-only -z` 的 NUL 分隔解析，路径原样落库；
 `conflict.txt` / `ConflictPane.vue` / `Auto-merging.md` / 非 ASCII 路径都不会被误删或转义。
 `merge confirm` 只服务冲突行；未显式给 `mergeSha` 时不会用预检 `target_sha` 冒充。
+
+冲突处理（只写结果，不自动改分支）：
+
+```bash
+# 读三方内容（base / ours / theirs）
+curl -s http://127.0.0.1:3210/api/merges/12/conflicts
+
+# 写回最终内容；返回 contentHash 与可 git apply 的 unified patch
+curl -s -X POST http://127.0.0.1:3210/api/merges/12/resolve \
+  -H 'content-type: application/json' \
+  -d '{"files":[{"path":"a.txt","content":"resolved\n"}],"writeToWorktree":false}'
+
+# MCP: merge_conflicts / merge_resolve
+```
+
+`writeToWorktree:true` 时只写入该工作单元已登记的 `unit_repos.worktree_path`，
+且路径必须位于 worktree 内；resolve 后仍需显式 `merge confirm` 才置 `resolved`。
 
 ## agent 运行时 / 会话 / 任务
 

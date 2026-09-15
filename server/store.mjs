@@ -1062,6 +1062,7 @@ export function createStore(db, options = {}) {
       state: r.state,
       mergeSha: r.merge_sha,
       conflictFiles: parseConflictFiles(r.conflict_files),
+      resolvedFiles: parseConflictFiles(r.resolved_files),
       createdAt: r.created_at,
       updatedAt: r.updated_at,
       createdBy: r.created_by,
@@ -1162,6 +1163,22 @@ export function createStore(db, options = {}) {
     const nextSha = mergeSha || cur.merge_sha || null
     db.prepare('UPDATE merges SET state = ?, merge_sha = ?, updated_at = ?, updated_by = ? WHERE id = ?')
       .run('resolved', nextSha, now(), actor(by), cur.id)
+    bumpRevision()
+    return mergeVO(db.prepare('SELECT * FROM merges WHERE id = ?').get(cur.id))
+  }
+
+  /** 写回冲突处理产物：记录 resolved_files（path/content/sha/contentHash/source），不直接改分支 */
+  function resolveMerge(id, { resolvedFiles = null } = {}, by = 'user') {
+    const cur = db.prepare('SELECT * FROM merges WHERE id = ?').get(Number(id))
+    if (!cur) throw new AppError(CODES.NOT_FOUND, `合并记录 ${id} 不存在`, { id })
+    if (cur.state !== 'precheck_conflict') {
+      throw new AppError(CODES.VALIDATION_FAILED, `只有 precheck_conflict 记录可写回冲突处理结果（当前 ${cur.state}）`, {
+        id: cur.id,
+        state: cur.state
+      })
+    }
+    db.prepare('UPDATE merges SET resolved_files = ?, updated_at = ?, updated_by = ? WHERE id = ?')
+      .run(resolvedFiles ? JSON.stringify(resolvedFiles) : null, now(), actor(by), cur.id)
     bumpRevision()
     return mergeVO(db.prepare('SELECT * FROM merges WHERE id = ?').get(cur.id))
   }
@@ -3383,6 +3400,7 @@ export function createStore(db, options = {}) {
     listMerges,
     addMerge,
     confirmMerge,
+    resolveMerge,
     abortMerge,
     // comments（diff 行级评论）
     createComment,

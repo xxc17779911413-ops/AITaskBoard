@@ -1,9 +1,11 @@
 import { CODES, AppError } from './errors.mjs'
+import { createHash } from 'node:crypto'
+import fs from 'node:fs'
 import { CHILD_TYPES } from './db.mjs'
 import path from 'node:path'
 import { startAgentRun } from './agent.mjs'
 import { resolveRepoDir, commitDiff as gitCommitDiff, commitStat as gitCommitStat, commitTrack as gitCommitTrack, commitTime as gitCommitTime, commitMeta as gitCommitMeta, showFileAt as gitShowFileAt, commitParents as gitCommitParents, patchId as gitPatchId, mergedInCommits as gitMergedInCommits, branchesContaining as gitBranchesContaining, branchContains as gitBranchContains, mergeBranch as gitMergeBranch, previewMerge as gitPreviewMerge, revParse as gitRevParse, mergeBase as gitMergeBase, branchLogShas as gitBranchLogShas, commitMetasBatch as gitCommitMetasBatch } from './git.mjs'
-import { addWorktree as gitAddWorktree, removeWorktree as gitRemoveWorktree, deleteLocalBranch as gitDeleteLocalBranch, checkWorktreePlan as gitCheckWorktreePlan } from './git.mjs'
+import { addWorktree as gitAddWorktree, removeWorktree as gitRemoveWorktree, deleteLocalBranch as gitDeleteLocalBranch, checkWorktreePlan as gitCheckWorktreePlan, conflictDetails as gitConflictDetails, unifiedFilePatch as gitUnifiedFilePatch } from './git.mjs'
 import { loadConfig } from './config.mjs'
 
 /** 能力清单：MCP 工具 / CLI 命令 / REST 路由 三者 1:1 对应 */
@@ -94,6 +96,8 @@ export const TOOLS = [
   'merge_precheck',
   'merge_run',
   'merge_list',
+  'merge_conflicts',
+  'merge_resolve',
   'merge_confirm',
   'merge_abort',
   'import_outline',
@@ -1666,7 +1670,12 @@ export async function runMerge(store, nodeRef, { repo = null, confirm = false, d
       continue
     }
     const pv = await gitPreviewMerge(t.dir, sourceBranch, targetBranch)
-    prechecked.push({ ...t, sourceSha, targetSha, precheck: { ok: true, ...pv } })
+    prechecked.push({
+      ...t,
+      sourceSha,
+      targetSha,
+      precheck: { ok: true, baseSha: await gitMergeBase(t.dir, sourceBranch, targetBranch), ...pv }
+    })
   }
 
   if (dryRun) {
@@ -1711,6 +1720,7 @@ export async function runMerge(store, nodeRef, { repo = null, confirm = false, d
           repo: t.repo,
           sourceBranch,
           targetBranch,
+          baseSha: t.precheck.baseSha,
           sourceSha: t.sourceSha,
           targetSha: t.targetSha,
           state: 'precheck_conflict',
@@ -1763,6 +1773,7 @@ export async function runMerge(store, nodeRef, { repo = null, confirm = false, d
           repo: t.repo,
           sourceBranch,
           targetBranch,
+          baseSha: t.precheck.baseSha,
           sourceSha: t.sourceSha,
           targetSha: t.targetSha,
           state: 'precheck_conflict',
@@ -1802,6 +1813,128 @@ export async function runMerge(store, nodeRef, { repo = null, confirm = false, d
 /** 合并记录列表：?nodeId=&state= */
 export function listMergeRecords(store, { nodeId = null, state = null } = {}) {
   return { items: store.listMerges({ nodeId, state }) }
+}
+
+/**
+ * 冲突详情：读取 merges 行对应仓库 / 分支的 base / ours / theirs 三方内容。
+ * 纯读，不落库、不改分支；供 ConflictPane / AI 读取后决定如何 resolve。
+ */
+export async function getMergeConflicts(store, mergeId) {
+  const row = store.getMerge(mergeId)
+  const repoRow = store.listRepos().find((r) => r.name === row.repo)
+  if (!repoRow || !repoRow.localPath) {
+    throw new AppError(CODES.REPO_PATH_MISSING, `仓库 ${row.repo} 未登记本地路径`, { repo: row.repo })
+  }
+  const dir = resolveRepoDir(repoRow)
+  const files = []
+  for (const file of row.conflictFiles || []) {
+    files.push(
+      await gitConflictDetails(dir, file, {
+        baseSha: row.baseSha,
+        targetSha: row.targetSha,
+        sourceSha: row.sourceSha
+      })
+    )
+  }
+  return {
+    merge: row,
+    repo: { name: repoRow.name, localPath: repoRow.localPath },
+    files
+  }
+}
+
+/**
+ * 写回冲突处理结果。
+ * - `files:[{path, content}]`：每个冲突文件的最终内容
+ * - 生成 `patches[]`（当前 conflict 状态 → 最终内容）与 `files[].contentHash`
+ * - `writeToWorktree:true` 时写入该仓库的 worktree（要求已登记 worktreePath）
+ * - 只更新 merges.resolved_files，不自动改分支；确认合并仍走 merge confirm
+ */
+export async function resolveMergeConflicts(store, mergeId, { files = [], writeToWorktree = false, by = 'user' } = {}) {
+  const row = store.getMerge(mergeId)
+  if (row.state !== 'precheck_conflict') {
+    throw new AppError(CODES.VALIDATION_FAILED, `只有 precheck_conflict 记录可处理冲突（当前 ${row.state}）`, {
+      id: row.id,
+      state: row.state
+    })
+  }
+  const repoRow = store.listRepos().find((r) => r.name === row.repo)
+  if (!repoRow || !repoRow.localPath) {
+    throw new AppError(CODES.REPO_PATH_MISSING, `仓库 ${row.repo} 未登记本地路径`, { repo: row.repo })
+  }
+  const dir = resolveRepoDir(repoRow)
+  const conflictSet = new Set(row.conflictFiles || [])
+  const incoming = new Map()
+  for (const f of files || []) {
+    const filePath = String(f?.path || '').trim()
+    if (!filePath) throw new AppError(CODES.VALIDATION_FAILED, 'files[].path 必填', { file: f })
+    if (!conflictSet.has(filePath)) {
+      throw new AppError(CODES.VALIDATION_FAILED, `文件 ${filePath} 不在该合并记录的冲突清单里`, {
+        file: filePath,
+        conflictFiles: [...conflictSet]
+      })
+    }
+    incoming.set(filePath, f.content == null ? '' : String(f.content))
+  }
+  const missing = (row.conflictFiles || []).filter((f) => !incoming.has(f))
+  if (missing.length) {
+    throw new AppError(CODES.VALIDATION_FAILED, `冲突文件未全部处理：${missing.join(', ')}`, { missing })
+  }
+
+  const unitRepos = store.listUnitRepos(row.nodeId)
+  const ur = unitRepos.find((u) => u.repoId === repoRow.id)
+  let worktreeDir = null
+  if (writeToWorktree) {
+    if (!ur || !ur.worktreePath) {
+      throw new AppError(CODES.VALIDATION_FAILED, `工作单元未登记 worktree，无法写入：${row.repo}`, { repo: row.repo })
+    }
+    worktreeDir = ur.worktreePath
+    if (!fs.existsSync(worktreeDir)) {
+      throw new AppError(CODES.VALIDATION_FAILED, `worktree 目录不存在：${worktreeDir}`, { repo: row.repo, worktreePath: worktreeDir })
+    }
+  }
+
+  const resolved = []
+  const patches = []
+  for (const filePath of row.conflictFiles || []) {
+    const content = incoming.get(filePath)
+    // 以 target 版本为「当前」基线生成补丁；git apply 到目标分支后即为最终内容。
+    const before = await gitConflictDetails(dir, filePath, {
+      baseSha: row.baseSha,
+      targetSha: row.targetSha,
+      sourceSha: row.sourceSha
+    })
+    const patch = await gitUnifiedFilePatch(dir, filePath, before.ours, content)
+    resolved.push({
+      path: filePath,
+      content,
+      contentHash: createHash('sha1').update(content).digest('hex'),
+      wroteWorktree: false
+    })
+    patches.push({ path: filePath, patch, appliesTo: 'target' })
+  }
+
+  if (writeToWorktree) {
+    for (const item of resolved) {
+      const abs = path.resolve(worktreeDir, item.path)
+      const root = path.resolve(worktreeDir)
+      if (!abs.startsWith(root + path.sep)) {
+        throw new AppError(CODES.VALIDATION_FAILED, `冲突路径越出 worktree：${item.path}`, { file: item.path })
+      }
+      fs.mkdirSync(path.dirname(abs), { recursive: true })
+      fs.writeFileSync(abs, item.content)
+      item.wroteWorktree = true
+    }
+  }
+
+  const updated = store.resolveMerge(row.id, { resolvedFiles: resolved }, by)
+  return {
+    merge: updated,
+    repo: { name: repoRow.name, localPath: repoRow.localPath, worktreePath: ur?.worktreePath || null },
+    files: resolved,
+    patches,
+    wroteWorktree: !!writeToWorktree
+  }
 }
 
 /** 确认冲突已在本地应用完成：回填 merge_sha，状态置 resolved */

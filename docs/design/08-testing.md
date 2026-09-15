@@ -14,9 +14,10 @@
   - `static-spa`：**静态托管与 SPA 回退优先级**（D1/D4 回归）——已存在图片命中 static 且字节一致、**不存在的 `/uploads/*` 必须 404 而不是回落到 SPA 变成 200 HTML**、含点号段的部署布局下深链仍返回 index.html、静态资源命中真实文件；三条契约在同一 app 上同时成立。**用例必须跑在含点号目录段（`<tmp>/.dotseg/…`）的布局下**，因为 `res.sendFile(绝对路径)` 默认拒绝点号段——开发/CI 的 `.worktrees/…` 正是这种布局，历史上曾让 SPA 回退整体失效，使「/uploads 不存在是否为 404」的验收在失效环境中得出错误结论
   - `git`：diff / log 读取、`merge-tree` 预检（构造真冲突用例）、merge 成功与失败、未登记仓库
   - `merges`：状态机（`precheck_conflict` → `resolved` / `merged`）、批量按序合并遇冲突停下、abort 不改分支
-  - `conflicts`：三方内容读取、逐块接受 / 拒绝产出、补丁可 `git apply`
+  - `conflicts`：三方内容读取（base / ours / theirs）、resolve 最终内容 + `contentHash`、统一补丁可 `git apply`、可选写入 worktree 且路径越界防护、resolve 不改分支也不自动置 resolved
   - `merge-integration`：`merges` 状态机 CRUD 与 state 校验；真 git 下 `precheckMerge` **只读**（冲突时 `merge-tree` exit=1 也能解析出冲突文件，不改目标/源分支）；`runMerge` 无冲突 `merge --no-ff` 落 `merged` + `merge_sha`、重复调用幂等、成功后恢复发起前 HEAD；冲突落 `precheck_conflict` 且不改分支；缺 `confirm` / 分支缺失 / 非工作单元类型给稳定错误码
   - `merge-integration` 回归（N2–N4）：冲突清单按 `merge-tree --name-only -z` 的 NUL 分隔解析——`conflict.txt` / `ConflictPane.vue` / `Auto-merging.md` 前缀型命名不被误删，`中文.txt` 原样 UTF-8 落库；`merged`/`aborted` 行拒绝 `confirm`、未显式给 `mergeSha` 不拿 `target_sha` 冒充；从第三分支发起合并成功后 HEAD 恢复到原分支
+  - `merge-integration` 回归（N5）：detached HEAD 发起合并时用 `rev-parse HEAD` 记录具体 sha、用 `symbolic-ref -q HEAD` 判定 detached；成功后 `checkout --detach <sha>` 恢复，`restoredHead` 报该 sha
   - `workspace-setup`：`unit_repos` CRUD（按 node × repo 幂等 / 只更新显式字段 / 级联删除 / 仅 `group`|`task` 可登记）；分支名与 worktree 路径渲染（`branchTemplate`，`slug` 空退回 `n{id}`）；真 git 下 `setupWorkspace` 建出同名分支 + worktree、**分支从基线当前 tip 派生**、重复调用幂等、`dryRun` 不碰 git 不落库不动 revision、基线不符 `BRANCH_EXISTS_DIFFERENT_BASE`、路径占用 `WORKTREE_PATH_EXISTS`、基线缺失 `BRANCH_NOT_FOUND`；`cleanupWorkspace` 需 confirm、移除 worktree、**未并入基线的分支必须保留**、重复调用幂等、一次操作只 +1 revision；三入口 1:1（HTTP / CLI / MCP）与逐字段一致；MCP `confirm` 缺失走 `isError + CONFIRM_REQUIRED` 不泄漏 `-32602`
   - `workspace-setup` 回归（D1–D5，均以旧实现验证必失败）：**基线不符时拒绝且零副作用、重试仍拒绝**（D1）；**分支并入 HEAD 但未并入基线时必须保留**、已并入基线但基线领先 HEAD 时正常删除（D2，**夹具强制 HEAD ≠ 基线**）；`--keep-branch` 真正保留分支 + 三入口 `removeBranch` 语义一致（D3）；dryRun 能探明路径占用与基线不符且仍零副作用（D4）；纯 no-op 重复 setup 不再 +1 revision（D5）
   - **夹具纪律**：凡「与 HEAD 状态相关」的用例，夹具必须让 HEAD 与声明基线停在不同提交。早期 `workspace-setup` 夹具让三者同 commit，`git branch -d` 与 `merge-base --is-ancestor <branch> <base>` 结论完全一致，使 D2 在 383 条全绿下漏网——**全绿不等于夹具有能力区分**

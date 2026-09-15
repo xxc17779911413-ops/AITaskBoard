@@ -105,11 +105,13 @@
 
 ### 7.12 冲突处理
 
-1. `GET /api/merges/:mid/conflicts` 返回每个冲突文件的 base / ours / theirs 与冲突块
-2. 工具内：`ConflictPane`（CodeMirror MergeView）逐块「保留当前 / 采用传入 / 手改」
-3. 产出：合并后的文件内容 + unified 补丁；可复制 / 下载 / 写入对应仓库的 worktree（`unit_repos.worktree_path`，若已填）
-4. AI：`conflict show` 读三方 → `conflict resolve` 写回合并结果（同一能力暴露给 MCP / CLI）
-5. 本地应用完成后「确认合并完成」→ 回填 `merge_sha`，`merges.state = resolved`；也可生成「交给 IDE 的提示词」
+1. `GET /api/merges/:mid/conflicts` 返回每个冲突文件的 base / ours / theirs（按记录的 base/target/source sha 读取）
+2. AI 用 `conflict show` 读同样三方数据；人可在 `ConflictPane` 里逐块「保留当前 / 采用传入 / 手改」
+3. `POST /api/merges/:mid/resolve`（或 CLI `conflict resolve` / MCP `merge_resolve`）写回最终内容：
+   每条含 `contentHash`，并产出面向目标分支、可 `git apply` 的 unified patch；`writeToWorktree:true`
+   时可写入已登记的 `unit_repos.worktree_path`（路径必须在 worktree 内）
+4. resolve **不自动改分支、不自动置 resolved**；内容与补丁写入 `merges.resolved_files`
+5. 本地应用完成后「确认合并完成」→ 回填 `merge_sha`，`merges.state = resolved`
 6. 放弃则调 `abort` → `aborted`（不改任何分支）
 
 ### 7.13 commit 预览

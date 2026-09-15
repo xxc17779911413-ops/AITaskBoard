@@ -42,9 +42,16 @@
 降级成 `resolved`；`aborted` 同样不可确认。冲突行若调用方没有显式给 `mergeSha`，
 `merge_sha` 保持为空，不拿预检时的 `target_sha` 冒充「本地已应用后的提交」，避免审计字段误导。
 
-**R6 合并成功恢复原 HEAD（已知风险 #2）**：`mergeBranch` 为执行 `merge --no-ff` 必须 checkout
-到集成分支，但会在成功后尽量 checkout 回发起前的 HEAD，并在返回值里显式回报 `restoredHead`；
+**R6 合并成功恢复原 HEAD（已知风险 #2 / N5 回归点）**：`mergeBranch` 为执行 `merge --no-ff` 必须
+checkout 到集成分支，但会在成功后恢复发起前的 HEAD。原位置用 `symbolic-ref -q HEAD` 区分
+attached/detached，并用 `rev-parse HEAD` 记录具体 sha：attached 恢复分支名，detached 用
+`checkout --detach <sha>` 恢复；`restoredHead` 对 attached 报分支名、对 detached 报 sha；
 冲突时不切回，保留现场供人工/AI 处理。
+
+**R7 冲突详情 / resolve 不自动改分支**：`getMergeConflicts` 用记录中的 base/target/source sha
+读取三方内容；`resolveMergeConflicts` 以 target 版本为「当前」生成 unified patch，把最终内容与
+`contentHash` 写入 `merges.resolved_files`。`writeToWorktree:true` 时只写入已登记的
+`unit_repos.worktree_path`，且路径必须位于 worktree 内；分支与 `state` 在 `confirm` 之前保持不变。
 
 ## 关联
 

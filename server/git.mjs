@@ -9,6 +9,7 @@
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { AppError, CODES } from './errors.mjs'
 
@@ -408,6 +409,71 @@ export async function previewMerge(dir, source, target) {
 }
 
 /**
+ * 冲突详情（只读）：读取 merge-tree 三方 merge 的 stage 1/2/3 内容。
+ * stage 1 = base，stage 2 = ours(target)，stage 3 = theirs(source)；
+ * add/add / modify/delete 等场景某些 stage 可能缺失，如实返回 null。
+ */
+export async function conflictDetails(dir, filePath, { baseSha = null, targetSha = null, sourceSha = null } = {}) {
+  const readAt = async (rev) => {
+    if (!rev) return null
+    const r = await gitTry(dir, ['show', `${rev}:${filePath}`])
+    return r.ok ? r.stdout : null
+  }
+  const [base, ours, theirs] = await Promise.all([
+    readAt(baseSha),
+    readAt(targetSha),
+    readAt(sourceSha)
+  ])
+  return {
+    file: filePath,
+    base,
+    ours,
+    theirs,
+    stages: { base: base != null, ours: ours != null, theirs: theirs != null }
+  }
+}
+
+/**
+ * 用 `git diff --no-index` 生成「当前文件 → 目标内容」的统一补丁。
+ * 补丁头归一成 a/<path>、b/<path>，便于 `git apply` 直接使用。
+ */
+export async function unifiedFilePatch(dir, filePath, before, after) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'taskboard-patch-'))
+  const beforeFile = path.join(tmp, 'before')
+  const afterFile = path.join(tmp, 'after')
+  fs.writeFileSync(beforeFile, before == null ? '' : String(before))
+  fs.writeFileSync(afterFile, after == null ? '' : String(after))
+  const r = await gitTry(dir, [
+    'diff',
+    '--no-index',
+    '--no-color',
+    '--src-prefix=a/',
+    '--dst-prefix=b/',
+    '--',
+    beforeFile,
+    afterFile
+  ])
+  fs.rmSync(tmp, { recursive: true, force: true })
+  if (r.code !== 1 && !r.ok) {
+    throw new AppError(CODES.GIT_FAILED, `生成补丁失败：${filePath}`, { stderr: String(r.stderr || '').slice(0, 1000) })
+  }
+  const lines = String(r.stdout || '').split('\n')
+  const out = []
+  for (const line of lines) {
+    if (line.startsWith('diff --git ')) {
+      out.push(`diff --git a/${filePath} b/${filePath}`)
+    } else if (line.startsWith('--- ')) {
+      out.push(`--- a/${filePath}`)
+    } else if (line.startsWith('+++ ')) {
+      out.push(`+++ b/${filePath}`)
+    } else {
+      out.push(line)
+    }
+  }
+  return out.join('\n')
+}
+
+/**
  * 批量提交元信息：一次 git log --no-walk 拿多条的 stat/作者/时间/分支。
  * 返回 Map<完整sha, {sha,author,authorEmail,date,branches,stat:[{path,additions,deletions,binary}]}>
  */
@@ -488,9 +554,12 @@ export async function mergeBranch(dir, source, target, message) {
   if (anc.ok && anc.code === 0) {
     return { ok: true, alreadyMerged: true, reason: 'already_merged' }
   }
-  // 记住发起前的 HEAD（分支名或 sha），成功后恢复；detached HEAD 也能安全恢复。
-  const prevHead = await gitTry(dir, ['rev-parse', '--abbrev-ref', 'HEAD'])
-  const previous = prevHead.ok ? prevHead.stdout.trim() : ''
+  // 记住发起前的 HEAD 位置：`symbolic-ref -q HEAD` 有输出 = attached（分支）；
+  // 无输出 = detached，此时用 `rev-parse HEAD` 的具体 sha 才能恢复（N5）。
+  const prevSymbolic = await gitTry(dir, ['symbolic-ref', '-q', 'HEAD'])
+  const prevShaRes = await gitTry(dir, ['rev-parse', 'HEAD'])
+  const previousSha = prevShaRes.ok ? prevShaRes.stdout.trim() : ''
+  const previousRef = prevSymbolic.ok ? prevSymbolic.stdout.trim().replace(/^refs\/heads\//, '') : ''
   // ③ 切到 target
   const co = await gitTry(dir, ['checkout', target])
   if (!co.ok) {
@@ -502,11 +571,14 @@ export async function mergeBranch(dir, source, target, message) {
     const head = await gitTry(dir, ['rev-parse', 'HEAD'])
     const mergeSha = head.ok ? head.stdout.trim() : null
     let restoredHead = null
-    if (previous && previous !== 'HEAD' && previous !== target) {
-      const back = await gitTry(dir, ['checkout', previous])
-      restoredHead = back.ok ? previous : null
-    } else if (previous === target) {
+    if (previousRef && previousRef !== target) {
+      const back = await gitTry(dir, ['checkout', previousRef])
+      restoredHead = back.ok ? previousRef : null
+    } else if (previousRef === target) {
       restoredHead = target
+    } else if (!previousRef && previousSha) {
+      const back = await gitTry(dir, ['checkout', '--detach', previousSha])
+      restoredHead = back.ok ? previousSha : null
     }
     return { ok: true, mergeSha, restoredHead, message: String(m.stdout || '').slice(0, 500) }
   }

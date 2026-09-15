@@ -1,7 +1,7 @@
 import express from 'express'
 import fs from 'node:fs'
 import { AppError, CODES } from './errors.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, approveAndMerge, getMergeStatus, previewMerges, mergeUpstream, precheckMerge, runMerge, listMergeRecords, confirmMergeRecord, abortMergeRecord, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, approveAndMerge, getMergeStatus, previewMerges, mergeUpstream, precheckMerge, runMerge, listMergeRecords, getMergeConflicts, resolveMergeConflicts, confirmMergeRecord, abortMergeRecord, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline } from './ops.mjs'
 import { setupWorkspace, getWorkspacePrompt, cleanupWorkspace } from './ops.mjs'
 import { startAgentRun, retryAndDispatch } from './agent.mjs'
 import { resolveRepoDir, pickBranchForCommit } from './git.mjs'
@@ -457,6 +457,25 @@ export function createApp({ store }) {
     wrap((req, res) => {
       const nodeId = req.query.nodeId ? store.resolveRef(String(req.query.nodeId)).id : null
       res.json(listMergeRecords(store, { nodeId, state: req.query.state || null }))
+    })
+  )
+  app.get(
+    '/api/merges/:mid/conflicts',
+    wrap(async (req, res) => {
+      res.json(await getMergeConflicts(store, Number(req.params.mid)))
+    })
+  )
+  app.post(
+    '/api/merges/:mid/resolve',
+    wrap(async (req, res) => {
+      const b = req.body || {}
+      res.json(
+        await resolveMergeConflicts(store, Number(req.params.mid), {
+          files: b.files || [],
+          writeToWorktree: !!b.writeToWorktree,
+          by: actorOf(req)
+        })
+      )
     })
   )
   app.post(

@@ -40,7 +40,7 @@
 | POST | `/api/nodes/:id/merges` | 显式合并：`{repo?, confirm, dryRun?}`，逐仓库预检并合并，返回 `{merged[], conflicts[], failed[]}`；需 `confirm:true` |
 | GET | `/api/merges?nodeId=&state=` | 合并记录列表（含待处理冲突） |
 | GET | `/api/merges/:mid/conflicts` | 冲突详情：文件 + 冲突块 + base / ours / theirs 三方内容 |
-| POST | `/api/merges/:mid/resolve` | 写回冲突处理结果 `{files:[{path, content}], asPatch?}` |
+| POST | `/api/merges/:mid/resolve` | 写回冲突处理结果 `{files:[{path, content}], writeToWorktree?}`；返回 `contentHash` 与可 `git apply` 的 unified `patches[]` |
 | POST | `/api/merges/:mid/confirm` | 确认合并完成（本地已应用）→ 回填 `merge_sha`，置 `resolved` |
 | POST | `/api/merges/:mid/abort` | 放弃本次合并 → `aborted`（不改任何分支） |
 | GET | `/api/repos` | 仓库登记列表 |

@@ -26,6 +26,8 @@
 | 合并预检有冲突 | 返回 `precheck_conflict` + 冲突文件（**不改工作区、不落分支**），进入冲突处理。`merge-tree` exit=1 也按业务结果处理，不落成 500；冲突清单按 `-z` NUL 分隔解析，前缀型文件名与非 ASCII 路径都原样保留 |
 | 合并未确认 | 400 `CONFIRM_REQUIRED`（HTTP/MCP `confirm:true`、CLI `--confirm`）|
 | 合并记录确认 / 放弃 | `confirm` 只服务冲突行（可显式回填 `mergeSha`）、`abort` 置 `aborted`；已 `aborted`/`merged` 不可确认、已 `merged` 不可放弃 |
+| 冲突 resolve 文件不完整 / 越出清单 | 400 `VALIDATION_FAILED`（缺文件或 path 不在 `conflict_files` 中，不静默忽略） |
+| 冲突 resolve 写入未登记 worktree | 400 `VALIDATION_FAILED`（`writeToWorktree:true` 但没有 `unit_repos.worktree_path` 或目录不存在） |
 | 本机 git 不可用 / 命令失败 | 500 `GIT_UNAVAILABLE` / `GIT_FAILED`（`details` 带原始 stderr） |
 | GitLab 未配置 | 400 + 「前往设置页配置」提示 |
 | GitLab 401 / 404 | 502（`details` 区分 token 无效 / 项目路径错误） |

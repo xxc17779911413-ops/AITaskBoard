@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFile, execFileSync } from 'node:child_process'
 import { promisify } from 'node:util'
+import { createHash } from 'node:crypto'
 import { tempHome } from './helpers.mjs'
 
 let repoSeq = 0
@@ -255,6 +256,29 @@ test('ops merge：合并成功后恢复发起前的 HEAD（不在集成分支留
   repo.g(['merge-base', '--is-ancestor', 'feature-send-receive-login', 'feature-send-receive'])
 })
 
+test('ops merge：detached HEAD 发起合并后恢复到原 sha（N5 回归）', async (t) => {
+  const { tmp, store, ops, repo, task } = await setup()
+  t.after(() => {
+    tmp.cleanup()
+    fs.rmSync(repo.root, { recursive: true, force: true })
+  })
+  // detached 到第三个提交（不是 source、也不是 target），并确保它仍包含基线，
+  // 这样工作单元的分支解析不受影响，但 HEAD 已不是任何分支。
+  repo.g(['checkout', '-q', '-B', 'third', 'feature-send-receive'])
+  fs.writeFileSync(path.join(repo.dir, 'third.txt'), 'third\n')
+  repo.g(['add', '.'])
+  repo.g(['commit', '-q', '-m', 'third work'])
+  const detachedSha = repo.g(['rev-parse', 'HEAD']).trim()
+  repo.g(['checkout', '-q', '--detach', detachedSha])
+
+  const out = await ops.runMerge(store, task.id, { confirm: true })
+  assert.equal(out.merged.length, 1)
+  assert.equal(repo.g(['rev-parse', '--abbrev-ref', 'HEAD']).trim(), 'HEAD', '应仍为 detached')
+  assert.equal(repo.g(['rev-parse', 'HEAD']).trim(), detachedSha, 'detached 应恢复到原 sha')
+  assert.equal(out.merged[0].restoredHead, detachedSha)
+  repo.g(['merge-base', '--is-ancestor', 'feature-send-receive-login', 'feature-send-receive'])
+})
+
 test('ops merge：冲突清单按分隔符解析——前缀型 / 大小写型 / 非 ASCII 路径都不丢（N2/N3 回归）', async (t) => {
   for (const name of ['conflict.txt', 'ConflictPane.vue', 'Auto-merging.md', '中文.txt']) {
     const { tmp, store, ops, repo, task } = await setup()
@@ -269,6 +293,77 @@ test('ops merge：冲突清单按分隔符解析——前缀型 / 大小写型 /
     const row = store.listMerges({ nodeId: task.id, state: 'precheck_conflict' })[0]
     assert.deepEqual(row.conflictFiles, [name])
   }
+})
+
+test('conflict：三方详情读取 + resolve 产出可 apply 的统一补丁（不自动改分支）', async (t) => {
+  const { tmp, store, ops, repo, repoRow, task } = await setup()
+  t.after(() => {
+    tmp.cleanup()
+    fs.rmSync(repo.root, { recursive: true, force: true })
+  })
+  makeConflict(repo)
+  const run = await ops.runMerge(store, task.id, { confirm: true })
+  const mid = run.conflicts[0].id
+  const beforeTarget = repo.g(['rev-parse', 'feature-send-receive']).trim()
+
+  const detail = await ops.getMergeConflicts(store, mid)
+  assert.equal(detail.files.length, 1)
+  assert.equal(detail.files[0].file, 'a.txt')
+  assert.equal(detail.files[0].base, 'base\n')
+  assert.equal(detail.files[0].ours, 'target\n')
+  assert.equal(detail.files[0].theirs, 'source\n')
+  assert.deepEqual(detail.files[0].stages, { base: true, ours: true, theirs: true })
+
+  const content = 'resolved\n'
+  const out = await ops.resolveMergeConflicts(store, mid, { files: [{ path: 'a.txt', content }] })
+  assert.equal(out.merge.state, 'precheck_conflict', 'resolve 只写回结果，不自动置 resolved')
+  assert.equal(out.files[0].contentHash, createHash('sha1').update(content).digest('hex'))
+  assert.equal(repo.g(['rev-parse', 'feature-send-receive']).trim(), beforeTarget, 'resolve 不得改分支')
+  assert.deepEqual(store.getMerge(mid).resolvedFiles, [
+    { path: 'a.txt', content, contentHash: out.files[0].contentHash, wroteWorktree: false }
+  ])
+
+  // 补丁面向 target 版本生成；checkout target 后应能直接 git apply。
+  repo.g(['checkout', '-q', 'feature-send-receive'])
+  fs.writeFileSync(path.join(repo.dir, 'a.txt'), 'target\n')
+  const patchFile = path.join(repo.root, 'resolve.patch')
+  fs.writeFileSync(patchFile, out.patches[0].patch)
+  repo.g(['apply', '--check', patchFile])
+  repo.g(['apply', patchFile])
+  assert.equal(fs.readFileSync(path.join(repo.dir, 'a.txt'), 'utf8'), content)
+})
+
+test('conflict：resolve 可写入已登记的 worktree；未登记 worktree 时拒绝', async (t) => {
+  const { tmp, store, ops, repo, repoRow, task } = await setup()
+  t.after(() => {
+    tmp.cleanup()
+    fs.rmSync(repo.root, { recursive: true, force: true })
+  })
+  makeConflict(repo)
+  const run = await ops.runMerge(store, task.id, { confirm: true })
+  const mid = run.conflicts[0].id
+  const wt = path.join(repo.root, 'work-wt-resolve')
+  const { addWorktree } = await import('../server/git.mjs')
+  // resolve 阶段不必真的把冲突分支挂进 worktree；用一个独立分支占位，
+  // 只验证「写入已登记 worktree」这条落盘链路。
+  repo.g(['branch', 'resolve-holder', 'feature-send-receive'])
+  await addWorktree(repo.dir, { worktreePath: wt, branch: 'resolve-holder', baseBranch: 'feature-send-receive' })
+  store.updateUnitRepo(store.listUnitRepos(task.id)[0].id, { worktreePath: wt })
+
+  const out = await ops.resolveMergeConflicts(store, mid, {
+    files: [{ path: 'a.txt', content: 'worktree resolved\n' }],
+    writeToWorktree: true
+  })
+  assert.equal(out.files[0].wroteWorktree, true)
+  assert.equal(fs.readFileSync(path.join(wt, 'a.txt'), 'utf8'), 'worktree resolved\n')
+
+  // 未登记 / 路径不存在时拒绝，而不是静默不写。
+  store.updateUnitRepo(store.listUnitRepos(task.id)[0].id, { worktreePath: null })
+  const run2 = await ops.runMerge(store, task.id, { confirm: true })
+  await assert.rejects(
+    ops.resolveMergeConflicts(store, run2.conflicts[0]?.id || mid, { files: [{ path: 'a.txt', content: 'x\n' }], writeToWorktree: true }),
+    (e) => e.code === 'VALIDATION_FAILED'
+  )
 })
 
 test('ops merge：缺 confirm / 分支缺失 / 类型非法给稳定错误码', async (t) => {
@@ -318,7 +413,7 @@ test('三入口 1:1：merge precheck / run / list / confirm / abort 与 store �
   t.after(() => s.cleanup())
 
   const tools = await s.mcpTools()
-  for (const name of ['merge_precheck', 'merge_run', 'merge_list', 'merge_confirm', 'merge_abort']) {
+  for (const name of ['merge_precheck', 'merge_run', 'merge_list', 'merge_conflicts', 'merge_resolve', 'merge_confirm', 'merge_abort']) {
     assert.ok(tools.includes(name), `${name} 应注册`)
   }
 
@@ -354,8 +449,16 @@ test('三入口 1:1：merge precheck / run / list / confirm / abort 与 store �
   const mid = conflict.body.conflicts[0].id
   assert.deepEqual(conflict.body.conflicts[0].conflictFiles, ['a.txt'])
 
+  const detail = await s2.http('GET', `/api/merges/${mid}/conflicts`)
+  assert.equal(detail.status, 200)
+  assert.equal(detail.body.files[0].ours, 'target\n')
+  const resolved = await s2.http('POST', `/api/merges/${mid}/resolve`, { files: [{ path: 'a.txt', content: 'resolved\n' }] })
+  assert.equal(resolved.status, 200)
+  assert.match(resolved.body.patches[0].patch, /^diff --git a\/a\.txt b\/a\.txt/m)
+
   const confirmed = JSON.parse((await s2.cli(['merge', 'confirm', String(mid), '--merge-sha', 'abcdef1'])).stdout)
   assert.equal(confirmed.state, 'resolved')
+  assert.equal(confirmed.resolvedFiles[0].contentHash, resolved.body.files[0].contentHash)
   const aborted = JSON.parse((await s2.mcp('merge_abort', { id: mid })).content[0].text)
   assert.equal(aborted.state, 'aborted')
 })

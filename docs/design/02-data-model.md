@@ -235,7 +235,8 @@ v1 中所有属性值均由用户编辑；系统自动写入的数据只有 MR �
 | base_sha / source_sha / target_sha | TEXT | 预检时的三方 sha |
 | state | TEXT NOT NULL | `precheck_conflict` / `merged` / `resolved` / `aborted` |
 | merge_sha | TEXT | 实际合并产生的 commit sha |
-| conflict_files | TEXT | 冲突文件与冲突块（JSON） |
+| conflict_files | TEXT | 冲突文件清单（JSON 字符串数组） |
+| resolved_files | TEXT | 冲突处理结果（JSON：[{path, content, contentHash, wroteWorktree}]） |
 | created_at / updated_at | TEXT | |
 | created_by / updated_by | TEXT | 操作者：`user` / `ai` / `cli` / `import` |
 

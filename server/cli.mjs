@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util'
 import { openDb } from './db.mjs'
 import { createStore } from './store.mjs'
 import { loadConfig, saveConfig, maskToken, DB_PATH } from './config.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, precheckMerge, runMerge, listMergeRecords, confirmMergeRecord, abortMergeRecord, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, precheckMerge, runMerge, listMergeRecords, getMergeConflicts, resolveMergeConflicts, confirmMergeRecord, abortMergeRecord, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline } from './ops.mjs'
 import { setupWorkspace, getWorkspacePrompt, cleanupWorkspace } from './ops.mjs'
 import { startAgentRun, retryAndDispatch, waitForAgentRun } from './agent.mjs'
 import { saveUpload } from './uploads.mjs'
@@ -41,6 +41,7 @@ const OPTIONS = {
   overwrite: { type: 'boolean' },
   limit: { type: 'string' },
   'merge-sha': { type: 'string' },
+  'write-worktree': { type: 'boolean' },
   summary: { type: 'string' },
   detail: { type: 'string' },
   decision: { type: 'string' },
@@ -192,6 +193,8 @@ const HELP = `task-board <命令>
   merge precheck <ref> [--repo <名>]             合并预检（merge-tree，不合并、不落库）
   merge run <ref> --confirm [--repo <名>]        显式合并回集成分支（无冲突则 merge --no-ff，不 push）
   merge list [--id <nodeId|ref>] [--status precheck_conflict|merged|resolved|aborted]   合并记录列表
+  conflict show <mergeId>                        冲突详情：base / ours / theirs 三方内容
+  conflict resolve <mergeId> --file <json> [--write-worktree]   写回冲突处理结果（可选写入 worktree）
   merge confirm <mergeId> [--merge-sha <sha>]    确认冲突已本地应用 → resolved + merge_sha
   merge abort <mergeId>                          放弃本次合并尝试 → aborted（不改分支）
   branch-config list                 标签级追踪目标列表（测试/预发/上线）
@@ -857,6 +860,22 @@ export async function run(argv) {
     case 'merge list': {
       const nodeId = values.id ? store.resolveRef(values.id).id : ref ? store.resolveRef(ref).id : null
       json(listMergeRecords(store, { nodeId, state: values.status || null }))
+      break
+    }
+    case 'conflict show':
+      json(await getMergeConflicts(store, Number(ref)))
+      break
+    case 'conflict resolve': {
+      const raw = readMaybeFile({ content: values.content, file: values.file })
+      if (!raw) throw new Error('conflict resolve 需要 --file <json>（{ files: [{path, content}] }）')
+      const parsed = JSON.parse(raw)
+      json(
+        await resolveMergeConflicts(store, Number(ref), {
+          files: Array.isArray(parsed) ? parsed : parsed.files || [],
+          writeToWorktree: !!values['write-worktree'],
+          by
+        })
+      )
       break
     }
     case 'merge confirm':

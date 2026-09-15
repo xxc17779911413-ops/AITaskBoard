@@ -249,6 +249,7 @@ CREATE TABLE IF NOT EXISTS merges (
   state TEXT NOT NULL,
   merge_sha TEXT,
   conflict_files TEXT,
+  resolved_files TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   created_by TEXT NOT NULL DEFAULT 'user',
@@ -429,6 +430,9 @@ function migrate(db) {
     ['reviewed_at', 'TEXT'],
     ['patch_id', 'TEXT'],
     ['branch', 'TEXT']
+  ])
+  addColumns(db, 'merges', [
+    ['resolved_files', 'TEXT']
   ])
   // agent 运行时管理（v2）：老库补列补表，SCHEMA 只对新库生效
   db.exec(`

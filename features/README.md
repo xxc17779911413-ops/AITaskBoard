@@ -46,6 +46,7 @@
 | **图片上传**（文档粘贴 / 选择图片 → base64 JSON → `/uploads/<name>`，魔数与声明类型交叉校验） | `uploads/` | 计划 5 | server/uploads.mjs + server/{http,cli,mcp}.mjs（upload_image）+ DocPane Vditor upload.handler |
 | **工作区准备**（工作单元登记仓库 → 建分支 + worktree → 返回开发提示词；清理需 confirm，未并分支保留） | `workspace-setup/` | 计划 4 | server/{git,store,ops,http,cli,mcp}.mjs（unit_repos / setupWorkspace / unit_*）|
 | **代码集成（显式合并）**（merge-tree 预检 → merge --no-ff / 冲突挂起 → 确认 / 放弃；全程不 push） | `merge-integration/` | 计划 4 | server/{git,store,ops,http,cli,mcp}.mjs（merges / precheckMerge / runMerge / merge_*）|
+| **冲突检测与处理**（三方内容读取 → 写回最终内容 + 可 apply 补丁 / 可选写入 worktree；三入口同源） | `conflict-resolution/` | 计划 4 | server/{git,store,ops,http,cli,mcp}.mjs（resolved_files / merge_conflicts / merge_resolve）|
 
 ### 已实现但**不设独立目录**（语义并入上述目录，避免索引重复）
 
@@ -63,7 +64,6 @@
 
 | 功能 | 目录 | 计划 | 代码位置（待建）|
 |---|---|---|---|
-| 冲突检测与处理 | `conflict-resolution/` | 计划 4 | server/git.mjs、web ConflictPane |
 | MR 自动拉取 | `mr-sync/` | 计划 5 | server/gitlab.mjs、mrs 表 |
 | 冒烟脚本 | `smoke-and-ai-docs/` | 计划 5 | scripts/smoke.mjs |
 

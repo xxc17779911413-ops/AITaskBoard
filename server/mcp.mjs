@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { openDb } from './db.mjs'
 import { createStore } from './store.mjs'
 import { loadConfig, saveConfig, maskToken } from './config.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, precheckMerge, runMerge, listMergeRecords, confirmMergeRecord, abortMergeRecord, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, precheckMerge, runMerge, listMergeRecords, getMergeConflicts, resolveMergeConflicts, confirmMergeRecord, abortMergeRecord, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline } from './ops.mjs'
 import { setupWorkspace, getWorkspacePrompt, cleanupWorkspace } from './ops.mjs'
 import { startAgentRun, retryAndDispatch } from './agent.mjs'
 import { resolveRepoDir, pickBranchForCommit } from './git.mjs'
@@ -742,6 +742,34 @@ export function createMcpServer({ store }) {
     },
     mcpValidate(async ({ id, mergeSha }) => {
       const out = confirmMergeRecord(store, Number(id), { mergeSha: mergeSha || null, by: 'ai' })
+      return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] }
+    })
+  )
+
+  server.tool(
+    'merge_conflicts',
+    '冲突详情（只读）：读取该合并记录的 base / ours / theirs 三方内容与 stage 可用性',
+    { id: z.union([z.number(), z.string()]) },
+    mcpValidate(async ({ id }) => {
+      const out = await getMergeConflicts(store, Number(id))
+      return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] }
+    })
+  )
+
+  server.tool(
+    'merge_resolve',
+    '写回冲突处理结果：files:[{path, content}]；返回 contentHash 与可 git apply 的 unified patch；可选写入 worktree',
+    {
+      id: z.union([z.number(), z.string()]),
+      files: z.array(z.object({ path: z.string(), content: z.string() })),
+      writeToWorktree: z.boolean().optional()
+    },
+    mcpValidate(async ({ id, files, writeToWorktree }) => {
+      const out = await resolveMergeConflicts(store, Number(id), {
+        files,
+        writeToWorktree: !!writeToWorktree,
+        by: 'ai'
+      })
       return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] }
     })
   )
