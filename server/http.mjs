@@ -1,7 +1,7 @@
 import express from 'express'
 import fs from 'node:fs'
 import { AppError, CODES } from './errors.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, approveAndMerge, getMergeStatus, previewMerges, mergeUpstream, precheckMerge, runMerge, listMergeRecords, getMergeConflicts, resolveMergeConflicts, confirmMergeRecord, abortMergeRecord, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, approveAndMerge, getMergeStatus, previewMerges, mergeUpstream, precheckMerge, runMerge, listMergeRecords, getMergeConflicts, resolveMergeConflicts, confirmMergeRecord, abortMergeRecord, listMergeRequests, refreshMergeRequests, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline } from './ops.mjs'
 import { setupWorkspace, getWorkspacePrompt, cleanupWorkspace } from './ops.mjs'
 import { startAgentRun, retryAndDispatch } from './agent.mjs'
 import { resolveRepoDir, pickBranchForCommit } from './git.mjs'
@@ -145,8 +145,23 @@ export function createApp({ store }) {
         attrs: store.getAttrs(node.id),
         documents: store.listDocuments(node.id),
         commits: store.listCommits(node.id),
+        mrs: store.listMrs(node.id),
         children: store.listChildren(node.id)
       })
+    })
+  )
+
+  // ---------- MR 自动拉取（只读） ----------
+  app.get(
+    '/api/nodes/:id/mrs',
+    wrap((req, res) => {
+      res.json(listMergeRequests(store, refOf(req)))
+    })
+  )
+  app.post(
+    '/api/nodes/:id/mrs/refresh',
+    wrap(async (req, res) => {
+      res.json(await refreshMergeRequests(store, refOf(req)))
     })
   )
 

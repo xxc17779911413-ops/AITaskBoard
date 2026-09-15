@@ -7,6 +7,7 @@ import { startAgentRun } from './agent.mjs'
 import { resolveRepoDir, commitDiff as gitCommitDiff, commitStat as gitCommitStat, commitTrack as gitCommitTrack, commitTime as gitCommitTime, commitMeta as gitCommitMeta, showFileAt as gitShowFileAt, commitParents as gitCommitParents, patchId as gitPatchId, mergedInCommits as gitMergedInCommits, branchesContaining as gitBranchesContaining, branchContains as gitBranchContains, mergeBranch as gitMergeBranch, previewMerge as gitPreviewMerge, revParse as gitRevParse, mergeBase as gitMergeBase, branchLogShas as gitBranchLogShas, commitMetasBatch as gitCommitMetasBatch } from './git.mjs'
 import { addWorktree as gitAddWorktree, removeWorktree as gitRemoveWorktree, deleteLocalBranch as gitDeleteLocalBranch, checkWorktreePlan as gitCheckWorktreePlan, conflictDetails as gitConflictDetails, unifiedFilePatch as gitUnifiedFilePatch } from './git.mjs'
 import { loadConfig } from './config.mjs'
+import { fetchMergeRequests } from './gitlab.mjs'
 
 /** 能力清单：MCP 工具 / CLI 命令 / REST 路由 三者 1:1 对应 */
 export const TOOLS = [
@@ -100,6 +101,8 @@ export const TOOLS = [
   'merge_resolve',
   'merge_confirm',
   'merge_abort',
+  'mr_list',
+  'mr_refresh',
   'import_outline',
   'batch',
   'config_get',
@@ -741,6 +744,40 @@ export async function previewMerges(store, nodeRef) {
 /**
  * 合入状态（组/子需求级）：列出该节点子树下每个子任务的开发分支是否已合入所属子需求的「需求分支」。
  */
+/**
+ * MR 列表（只读）：读取该节点已拉取的 MR；拉取失败不改既有数据。
+ */
+export function listMergeRequests(store, nodeRef) {
+  const node = store.resolveRef(String(nodeRef))
+  return { node: { id: node.id, name: node.name, path: node.path }, items: store.listMrs(node.id) }
+}
+
+/**
+ * 刷新 MR：前置为 GitLab 已配置 + 节点为 subreq + branch / gitlab_project 属性非空；
+ * 按 (node, project, iid) upsert，本次未返回的既有记录保留不删。
+ * 任何拉取失败都抛稳定码，store 不变。
+ */
+export async function refreshMergeRequests(store, nodeRef) {
+  const node = store.resolveRef(String(nodeRef))
+  if (node.type !== 'subreq') {
+    throw new AppError(CODES.VALIDATION_FAILED, '只有 subreq 节点支持 MR 自动拉取', { type: node.type, allowed: ['subreq'] })
+  }
+  const attrs = store.getAttrs(node.id) || {}
+  const branch = attrs.branch || attrs.reqBranch || null
+  const project = attrs.gitlab_project || null
+  if (!branch || !project) {
+    throw new AppError(CODES.VALIDATION_FAILED, '请先补填该子需求的「分支」与「GitLab 项目」属性', {
+      branch: branch || null,
+      gitlab_project: project || null,
+      required: ['branch', 'gitlab_project']
+    })
+  }
+  const cfg = loadConfig()
+  const rows = await fetchMergeRequests(cfg, project, branch)
+  const out = store.upsertMrs(node.id, project, rows)
+  return { node: { id: node.id, name: node.name, path: node.path }, branch, ...out, errors: [], items: store.listMrs(node.id) }
+}
+
 export async function getMergeStatus(store, nodeRef) {
   const node = store.resolveRef(String(nodeRef))
   const subreq = node.type === 'subreq' ? node : store.findAncestorOfType(node.id, 'subreq')

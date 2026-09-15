@@ -398,6 +398,9 @@ curl -s -X POST http://127.0.0.1:3210/api/nodes/9/cleanup \
 # node bin/taskboard.js merge confirm <mergeId> [--merge-sha <sha>]
 # node bin/taskboard.js merge abort <mergeId>
 # MCP: merge_precheck / merge_run / merge_list / merge_confirm / merge_abort
+# node bin/taskboard.js mr list "项目A/需求1/子需求1"
+# node bin/taskboard.js mr refresh "项目A/需求1/子需求1"
+# MCP: mr_list / mr_refresh
 ```
 
 分支名由 `config.branchTemplate` 渲染（默认 `{base_branch}-{slug}`，`slug` 为空退回 `n{id}`）；

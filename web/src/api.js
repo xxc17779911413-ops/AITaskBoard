@@ -101,6 +101,10 @@ export default {
     api(`/merges/${mid}/confirm`, { method: 'POST', body: JSON.stringify({ mergeSha: mergeSha || null }) }),
   mergeAbort: (mid) => api(`/merges/${mid}/abort`, { method: 'POST', body: '{}' }),
 
+  // MR 自动拉取（只读）
+  mrList: (nodeId) => api(`/nodes/${nodeId}/mrs`),
+  mrRefresh: (nodeId) => api(`/nodes/${nodeId}/mrs/refresh`, { method: 'POST', body: '{}' }),
+
   // IDE 桥：请求 IDEA 打开 diff（插件轮询领取）
   ideOpenDiff: (payload) => api('/ide/open-diff', { method: 'POST', body: JSON.stringify(payload) }),
 

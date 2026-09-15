@@ -222,6 +222,30 @@
           </el-table-column>
         </el-table>
       </el-tab-pane>
+
+      <el-tab-pane v-if="node.type === 'subreq'" label="MR" name="mrs">
+        <div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+          <el-button size="small" :loading="refreshingMrs" @click="refreshMrs">刷新 MR</el-button>
+        </div>
+        <el-empty v-if="!mrs.length" description="暂无 MR（点「刷新 MR」按 GitLab 项目 + 分支拉取）" />
+        <el-table v-else :data="mrs" size="small">
+          <el-table-column prop="iid" label="!" width="64" />
+          <el-table-column label="标题" min-width="180">
+            <template #default="{ row }">
+              <el-link v-if="row.webUrl" type="primary" :href="row.webUrl" target="_blank">{{ row.title }}</el-link>
+              <span v-else>{{ row.title }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="90">
+            <template #default="{ row }">
+              <el-tag size="small" :type="mrTagType(row.state)" effect="plain">{{ row.state }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="sourceBranch" label="源分支" min-width="140" />
+          <el-table-column prop="updatedAt" label="更新时间" width="170" />
+        </el-table>
+        <div v-if="mrs.length" class="mr-fetched">上次拉取：{{ mrs[0].fetchedAt }}</div>
+      </el-tab-pane>
     </el-tabs>
   </el-drawer>
 
@@ -265,6 +289,8 @@ const attrDefs = ref([])
 const children = ref([])
 const commits = ref([])
 const repos = ref([])
+const mrs = ref([])
+const refreshingMrs = ref(false)
 const deliveryScope = ref('self')
 const gate = ref({ decision: 'unknown', sources: [], blockers: [] })
 const acceptance = ref({ state: 'not_applicable', report: { totals: { cases: 0, pass: 0 }, evidenceFingerprint: '' }, signoff: null })
@@ -373,6 +399,21 @@ async function loadPendingMerge() {
     pendingMerge.value = out.items?.[0] || null
   } catch {
     pendingMerge.value = null
+  }
+}
+
+const mrTagType = (s) => ({ opened: 'success', merged: 'info', closed: 'danger', locked: 'warning' }[s] || 'info')
+
+async function refreshMrs() {
+  refreshingMrs.value = true
+  try {
+    const out = await api.mrRefresh(props.node.id)
+    mrs.value = out.items || []
+    ElMessage.success(`已拉取 ${out.pulled} 条 MR（新增 ${out.created} / 更新 ${out.updated}）`)
+  } catch (e) {
+    ElMessage.error(e?.message || String(e))
+  } finally {
+    refreshingMrs.value = false
   }
 }
 
@@ -497,6 +538,7 @@ async function loadDetail() {
   attrValues.value = detail.attrs || {}
   children.value = detail.children || []
   commits.value = detail.commits || []
+  mrs.value = detail.mrs || []
   const allDefs = await api.attrDefs()
   attrDefs.value = allDefs.filter((d) => d.enabled !== false && d.nodeType === detail.type)
   const repoList = await api.repos()
@@ -693,6 +735,11 @@ watch(() => props.node?.id, loadDetail, { immediate: true })
 }
 .design-host.vditor-reset {
   padding: 8px 16px;
+}
+.mr-fetched {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #909399;
 }
 /* 让 tab 内容撑满抽屉高度，使 DocPane 里的 Vditor 拿到确定高度（否则渲染高度塌陷） */
 :deep(.el-drawer__body) {

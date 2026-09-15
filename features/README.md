@@ -47,6 +47,7 @@
 | **工作区准备**（工作单元登记仓库 → 建分支 + worktree → 返回开发提示词；清理需 confirm，未并分支保留） | `workspace-setup/` | 计划 4 | server/{git,store,ops,http,cli,mcp}.mjs（unit_repos / setupWorkspace / unit_*）|
 | **代码集成（显式合并）**（merge-tree 预检 → merge --no-ff / 冲突挂起 → 确认 / 放弃；全程不 push） | `merge-integration/` | 计划 4 | server/{git,store,ops,http,cli,mcp}.mjs（merges / precheckMerge / runMerge / merge_*）|
 | **冲突检测与处理**（三方内容读取 → 写回最终内容 + 可 apply 补丁 / 可选写入 worktree；三入口同源） | `conflict-resolution/` | 计划 4 | server/{git,store,ops,http,cli,mcp}.mjs（resolved_files / merge_conflicts / merge_resolve）|
+| **MR 自动拉取**（GitLab 项目 + 分支只读拉取，upsert 不删既有记录；三入口 + 抽屉 MR 页签） | `mr-sync/` | 计划 5 | server/gitlab.mjs + server/{store,ops,http,cli,mcp}.mjs（mrs / mr_list / mr_refresh）|
 
 ### 已实现但**不设独立目录**（语义并入上述目录，避免索引重复）
 
@@ -64,7 +65,6 @@
 
 | 功能 | 目录 | 计划 | 代码位置（待建）|
 |---|---|---|---|
-| MR 自动拉取 | `mr-sync/` | 计划 5 | server/gitlab.mjs、mrs 表 |
 | 冒烟脚本 | `smoke-and-ai-docs/` | 计划 5 | scripts/smoke.mjs |
 
 > 计划 4–5 的功能目录里已有 `prd.md`（需求 + 验收标准）与 `design.md`（设计要点 + 关联章节 + 注意事项），

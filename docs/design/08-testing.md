@@ -8,7 +8,8 @@
   - `attrs`：属性定义 CRUD、属性值 upsert、required / 类型校验、停用定义后不校验
   - `documents`：CRUD、按名 upsert 幂等、重名 409、排序、随节点级联删除
   - `commits`：sha 校验、同节点幂等
-  - `gitlab`：分页、401、404、超时（mock `fetch`）
+  - `gitlab`：分页、401、404、超时（mock `fetch` / 本地 stub）
+  - `mr-sync`：GitLab 项目 + 源分支只读拉取；分页最多 3 页；按 `(node, project, iid)` upsert，本次未返回记录保留；未配置 / 401 / 404 / 缺属性稳定错误码且既有数据不变；HTTP / CLI / MCP 三入口一致；节点详情内嵌 `mrs`
   - `config`：默认值生成、权限 600、token 打码
   - `uploads`：扩展名白名单 / ≤10 MB / **魔数与声明类型交叉校验**（改名与伪装被拦下）/ 落盘命名（时间戳 + 随机串，不覆盖）/ 静态访问可取回原始字节；三入口 1:1（HTTP 201 + `GET /uploads/:name`、CLI 路径与 `--data` 两种用法、MCP `upload_image` 非法值走 `isError` 而非 SDK 报错）；四入口落盘语义逐字段一致；**回归防护**——框架层错误不泄漏成 500（超大 body → 413 `PAYLOAD_TOO_LARGE`、非法 JSON → 400 `VALIDATION_FAILED`）、alt 转义（含 `]` 的文件名不截断 Markdown）、CLI 文件系统错误归一成 `VALIDATION_FAILED`、MCP 类型错误/缺字段走 `isError` 不泄漏 `-32602`（且对外 JSON schema 不退化）
   - `static-spa`：**静态托管与 SPA 回退优先级**（D1/D4 回归）——已存在图片命中 static 且字节一致、**不存在的 `/uploads/*` 必须 404 而不是回落到 SPA 变成 200 HTML**、含点号段的部署布局下深链仍返回 index.html、静态资源命中真实文件；三条契约在同一 app 上同时成立。**用例必须跑在含点号目录段（`<tmp>/.dotseg/…`）的布局下**，因为 `res.sendFile(绝对路径)` 默认拒绝点号段——开发/CI 的 `.worktrees/…` 正是这种布局，历史上曾让 SPA 回退整体失效，使「/uploads 不存在是否为 404」的验收在失效环境中得出错误结论

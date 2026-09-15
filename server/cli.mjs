@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util'
 import { openDb } from './db.mjs'
 import { createStore } from './store.mjs'
 import { loadConfig, saveConfig, maskToken, DB_PATH } from './config.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, precheckMerge, runMerge, listMergeRecords, getMergeConflicts, resolveMergeConflicts, confirmMergeRecord, abortMergeRecord, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, precheckMerge, runMerge, listMergeRecords, getMergeConflicts, resolveMergeConflicts, confirmMergeRecord, abortMergeRecord, listMergeRequests, refreshMergeRequests, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline } from './ops.mjs'
 import { setupWorkspace, getWorkspacePrompt, cleanupWorkspace } from './ops.mjs'
 import { startAgentRun, retryAndDispatch, waitForAgentRun } from './agent.mjs'
 import { saveUpload } from './uploads.mjs'
@@ -197,6 +197,8 @@ const HELP = `task-board <命令>
   conflict resolve <mergeId> --file <json> [--write-worktree]   写回冲突处理结果（可选写入 worktree）
   merge confirm <mergeId> [--merge-sha <sha>]    确认冲突已本地应用 → resolved + merge_sha
   merge abort <mergeId>                          放弃本次合并尝试 → aborted（不改分支）
+  mr list <ref>                                 列出该子需求已拉取的 MR
+  mr refresh <ref>                              按 GitLab 项目 + 分支拉取 MR（只读；失败不改既有数据）
   branch-config list                 标签级追踪目标列表（测试/预发/上线）
   branch-config set <标签> [--test-branch b] [--pre-branch b] [--release-branch b]
   branch-config remove <标签>
@@ -883,6 +885,12 @@ export async function run(argv) {
       break
     case 'merge abort':
       json(abortMergeRecord(store, Number(ref), { by }))
+      break
+    case 'mr list':
+      json(listMergeRequests(store, ref))
+      break
+    case 'mr refresh':
+      json(await refreshMergeRequests(store, ref))
       break
     case 'repo add':
       json(store.addRepo({ name: values.name, localPath: values['local-path'], gitlabProject: values['gitlab-project'], tags: values.tags, testBranch: values['test-branch'], preBranch: values['pre-branch'], releaseBranch: values['release-branch'] }))

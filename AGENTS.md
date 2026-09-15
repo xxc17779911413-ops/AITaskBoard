@@ -105,6 +105,7 @@ docs/design.md    ← 主设计文档权威副本
       upload_image
 工作区  unit_repo_list · unit_repo_add · unit_repo_remove · unit_setup · unit_prompt · unit_cleanup
 合并    merge_precheck · merge_run · merge_list · merge_conflicts · merge_resolve · merge_confirm · merge_abort
+MR      mr_list · mr_refresh
 批量  batch · import_outline
 门禁  requirement_readiness · mindmap · delivery_gate
 设计  design_outline · design_outline_apply

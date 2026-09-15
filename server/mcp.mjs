@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { openDb } from './db.mjs'
 import { createStore } from './store.mjs'
 import { loadConfig, saveConfig, maskToken } from './config.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, precheckMerge, runMerge, listMergeRecords, getMergeConflicts, resolveMergeConflicts, confirmMergeRecord, abortMergeRecord, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, precheckMerge, runMerge, listMergeRecords, getMergeConflicts, resolveMergeConflicts, confirmMergeRecord, abortMergeRecord, listMergeRequests, refreshMergeRequests, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline } from './ops.mjs'
 import { setupWorkspace, getWorkspacePrompt, cleanupWorkspace } from './ops.mjs'
 import { startAgentRun, retryAndDispatch } from './agent.mjs'
 import { resolveRepoDir, pickBranchForCommit } from './git.mjs'
@@ -801,6 +801,28 @@ export function createMcpServer({ store }) {
     async ({ content, parentPath, dryRun }) => {
       return { content: [{ type: 'text', text: JSON.stringify(importOutline(store, content, { parentPath, dryRun: !!dryRun, by: 'ai' }), null, 2) }] }
     }
+  )
+
+  // ---------- MR 自动拉取（只读） ----------
+
+  server.tool(
+    'mr_list',
+    '列出该子需求已拉取的 GitLab MR（只读）',
+    { node: z.union([z.number(), z.string()]) },
+    mcpValidate(async ({ node }) => {
+      const out = listMergeRequests(store, String(node))
+      return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] }
+    })
+  )
+
+  server.tool(
+    'mr_refresh',
+    '按 GitLab 项目 + 源分支拉取该子需求的 MR（只读；失败不改既有数据）',
+    { node: z.union([z.number(), z.string()]) },
+    mcpValidate(async ({ node }) => {
+      const out = await refreshMergeRequests(store, String(node))
+      return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] }
+    })
   )
 
   server.tool(

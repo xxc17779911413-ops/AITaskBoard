@@ -1216,6 +1216,64 @@ export function createStore(db, options = {}) {
     return commitVO(db.prepare('SELECT * FROM commits WHERE id = ?').get(cur.id))
   }
 
+  // ---------- mrs（GitLab MR 自动拉取，系统写入） ----------
+
+  function mrVO(r) {
+    return {
+      id: r.id,
+      nodeId: r.node_id,
+      project: r.project,
+      iid: r.iid,
+      title: r.title,
+      state: r.state,
+      sourceBranch: r.source_branch,
+      webUrl: r.web_url,
+      updatedAt: r.updated_at,
+      fetchedAt: r.fetched_at
+    }
+  }
+
+  function listMrs(nodeId) {
+    rawNode(nodeId)
+    return db
+      .prepare('SELECT * FROM mrs WHERE node_id = ? ORDER BY updated_at DESC, iid DESC')
+      .all(nodeId)
+      .map(mrVO)
+  }
+
+  /**
+   * 按 (node, project, iid) upsert 一批 MR；本次未返回的既有记录保留不删。
+   * 返回 { project, pulled, created, updated } 供入口回报。
+   */
+  function upsertMrs(nodeId, project, rows = []) {
+    rawNode(nodeId)
+    if (!project) throw new AppError(CODES.VALIDATION_FAILED, 'project 必填', { field: 'project' })
+    const ts = now()
+    let created = 0
+    let updated = 0
+    withoutBump(() => {
+      for (const r of rows) {
+        if (!Number.isFinite(Number(r.iid))) continue
+        const existing = db
+          .prepare('SELECT id FROM mrs WHERE node_id = ? AND project = ? AND iid = ?')
+          .get(nodeId, project, Number(r.iid))
+        if (existing) {
+          db.prepare(
+            'UPDATE mrs SET title = ?, state = ?, source_branch = ?, web_url = ?, updated_at = ?, fetched_at = ? WHERE id = ?'
+          ).run(r.title ?? null, r.state ?? null, r.sourceBranch ?? null, r.webUrl ?? null, r.updatedAt ?? null, ts, existing.id)
+          updated += 1
+        } else {
+          db.prepare(
+            'INSERT INTO mrs (node_id,project,iid,title,state,source_branch,web_url,updated_at,fetched_at) VALUES (?,?,?,?,?,?,?,?,?)'
+          ).run(nodeId, project, Number(r.iid), r.title ?? null, r.state ?? null, r.sourceBranch ?? null, r.webUrl ?? null, r.updatedAt ?? null, ts)
+          created += 1
+        }
+      }
+    })
+    if (rows.length > 0) bumpRevision()
+    return { project, pulled: rows.length, created, updated }
+  }
+
   // ---------- comments（diff 行级评论） ----------
 
   function commentVO(r) {
@@ -3395,6 +3453,9 @@ export function createStore(db, options = {}) {
     listCommitsWithNode,
     findAncestorOfType,
     dedupeCommits,
+    // mrs（GitLab MR 自动拉取）
+    listMrs,
+    upsertMrs,
     // merges（显式合并）
     getMerge,
     listMerges,
