@@ -13,6 +13,17 @@
   - `renderAcceptanceMd`：聚合结果 → markdown 验收报告。
 - `server/http.mjs` / `cli.mjs` / `mcp.mjs`：三入口 1:1 暴露（只做参数装配 + 错误映射）。
 
+## 1.1 Web 面板（RegressionPane）
+
+抽屉「回归测试」页签（`web/src/components/RegressionPane.vue`）复用上面同一套 HTTP 接口，不新增后端语义：
+
+- 顶部验收 KPI 消费 `GET /api/nodes/:id/acceptance-report` 的 `totals`，口径与后端一致
+  （`running` / `notRun` 不进通过率分母，无完结显示「—」）；`web/src/regression.js` 是纯展示函数，可单测。
+- 用例区：`GET/POST /api/nodes/:id/test-cases`（含 `kind` / `includeDisabled` 筛选）、`PATCH/DELETE /api/test-cases/:cid`。
+- 运行区：先 `POST /api/nodes/:id/test-runs {dryRun:true}` 预览提示词，再派单；派单后报告由后端开为 `running`。
+- 报告区：`GET /api/nodes/:id/test-reports`（倒序、可按 `caseId` 筛）、`GET /api/test-reports/:rid`、
+  `PATCH /api/test-reports/:rid` 回写终态。面板只做展示与触发，状态机、引用完整性、自动收尾都留在 store。
+
 ## 2. 关键规则
 
 **R1 为什么挂在任意节点上**：需求 / 子需求 / 任务组 / 子任务都可能需要回归；缺陷也常需要复现验证。

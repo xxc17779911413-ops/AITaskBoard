@@ -865,3 +865,67 @@ test('交付门禁：非法 scope / format 返回 400 VALIDATION_FAILED（HTTP �
   await close()
   tmp.cleanup()
 })
+
+// ---------- 回归测试 Web 面板（RegressionPane）调用的接口序列 ----------
+
+test('回归面板：用例管理 → 预演 → 报告 → 回写 → 验收 KPI 与列表一致', async () => {
+  const { tmp, store, post, get, patch, del, close } = await setup()
+  const p = await post('/api/nodes', { type: 'project', name: 'P' })
+  const r = await post('/api/nodes', { parentId: p.id, type: 'requirement', name: 'R' })
+
+  // 面板「新建用例」走 upsert
+  const c1 = await post(`/api/nodes/${r.id}/test-cases/upsert`, { name: 'A', prompt: '跑 A', expectation: '绿' })
+  const c2 = await post(`/api/nodes/${r.id}/test-cases/upsert`, { name: 'B', prompt: '跑 B' })
+  assert.equal(c1.created, true)
+  assert.equal(c2.created, true)
+
+  // 面板「类型筛选」+「含停用」：停用用例默认不进列表
+  await post(`/api/nodes/${r.id}/test-cases/upsert`, { name: 'C', prompt: '跑 C', kind: 'code_check', enabled: false })
+  assert.equal((await get(`/api/nodes/${r.id}/test-cases`)).length, 2)
+  assert.equal((await get(`/api/nodes/${r.id}/test-cases?includeDisabled=true`)).length, 3)
+  assert.equal((await get(`/api/nodes/${r.id}/test-cases?kind=code_check&includeDisabled=true`)).length, 1)
+
+  // 面板「预演」：只返回提示词，不落报告
+  const dry = await post(`/api/nodes/${r.id}/test-runs`, { caseIds: [c1.id], dryRun: true })
+  assert.equal(dry.dryRun, true)
+  assert.ok(dry.prompt.includes('A'))
+  assert.equal((await get(`/api/nodes/${r.id}/test-reports`)).length, 0)
+
+  // 派单（面板「派单执行」）在无登记仓库时不可真派单，这里直接开 running 报告，
+  // 覆盖面板随后依赖的报告列表 / 回写 / 验收链路。
+  const repA = store.createTestReport(r.id, { caseId: c1.id, kind: 'regression', status: 'running', summary: '已派单执行：A' })
+  const repB = store.createTestReport(r.id, { caseId: c2.id, kind: 'regression', status: 'running', summary: '已派单执行：B' })
+
+  // 面板「测试报告」列表（倒序）+ 按用例筛选
+  const reports = await get(`/api/nodes/${r.id}/test-reports`)
+  assert.equal(reports.length, 2)
+  assert.ok(reports[0].id > reports[1].id)
+  assert.equal((await get(`/api/nodes/${r.id}/test-reports?caseId=${c1.id}`)).length, 1)
+
+  // 面板「回写」：running → 终态
+  assert.equal((await patch(`/api/test-reports/${repA.id}`, { status: 'pass', summary: '全绿' })).status, 'pass')
+  assert.equal((await patch(`/api/test-reports/${repB.id}`, { status: 'fail', summary: '断言失败' })).status, 'fail')
+
+  // 面板顶部验收 KPI：分桶守恒 + 通过率 + 最近结果与报告一致
+  const acceptance = await get(`/api/nodes/${r.id}/acceptance-report`)
+  const t = acceptance.totals
+  assert.equal(t.cases, 2)
+  assert.equal(t.settled, 2)
+  assert.equal(t.pass, 1)
+  assert.equal(t.fail, 1)
+  assert.equal(t.running, 0)
+  assert.equal(t.notRun, 0)
+  assert.equal(t.pass + t.fail + t.blocked + t.error + t.cancelled + t.running + t.notRun, t.cases)
+  assert.equal(acceptance.passRate, 0.5)
+  assert.equal(acceptance.items.find((i) => i.caseId === c1.id).latestStatus, 'pass')
+  assert.equal(acceptance.items.find((i) => i.caseId === c2.id).latestStatus, 'fail')
+
+  // 面板「删除用例」：历史报告保留、caseId 置空，验收 cases 减一
+  await del(`/api/test-cases/${c2.id}`)
+  assert.equal((await get(`/api/nodes/${r.id}/test-cases`)).length, 1)
+  assert.equal((await get(`/api/test-reports/${repB.id}`)).caseId, null)
+  assert.equal((await get(`/api/nodes/${r.id}/acceptance-report`)).totals.cases, 1)
+
+  await close()
+  tmp.cleanup()
+})

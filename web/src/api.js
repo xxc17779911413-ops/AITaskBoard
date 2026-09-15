@@ -66,6 +66,32 @@ export default {
   docDelete: (docId) => api(`/documents/${docId}`, { method: 'DELETE' }),
   docReorder: (nodeId, data) => api(`/nodes/${nodeId}/documents/reorder`, { method: 'POST', body: JSON.stringify(data) }),
 
+  // 回归测试闭环（用例 / 运行 / 测试报告 / 验收报告）
+  testCaseList: (nodeId, { kind, includeDisabled } = {}) => {
+    const qs = new URLSearchParams()
+    if (kind) qs.set('kind', kind)
+    if (includeDisabled) qs.set('includeDisabled', 'true')
+    const suffix = qs.toString() ? `?${qs}` : ''
+    return api(`/nodes/${nodeId}/test-cases${suffix}`)
+  },
+  testCaseUpsert: (nodeId, data) => api(`/nodes/${nodeId}/test-cases/upsert`, { method: 'POST', body: JSON.stringify(data) }),
+  testCaseUpdate: (caseId, data) => api(`/test-cases/${caseId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  testCaseRemove: (caseId) => api(`/test-cases/${caseId}`, { method: 'DELETE' }),
+  testCaseReorder: (nodeId, orderedIds) =>
+    api(`/nodes/${nodeId}/test-cases/reorder`, { method: 'POST', body: JSON.stringify({ orderedIds }) }),
+  testRun: (nodeId, data) => api(`/nodes/${nodeId}/test-runs`, { method: 'POST', body: JSON.stringify(data) }),
+  testReportList: (nodeId, { caseId, kind, limit } = {}) => {
+    const qs = new URLSearchParams()
+    if (caseId) qs.set('caseId', caseId)
+    if (kind) qs.set('kind', kind)
+    if (limit) qs.set('limit', limit)
+    const suffix = qs.toString() ? `?${qs}` : ''
+    return api(`/nodes/${nodeId}/test-reports${suffix}`)
+  },
+  testReportGet: (reportId) => api(`/test-reports/${reportId}`),
+  testReportFinish: (reportId, data) => api(`/test-reports/${reportId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  acceptanceReport: (nodeId, { scope } = {}) => api(`/nodes/${nodeId}/acceptance-report${scope ? `?scope=${scope}` : ''}`),
+
   // 交付门禁
   deliveryGate: (nodeId, scope) => api(`/nodes/${nodeId}/delivery-gate?scope=${scope || 'self'}`),
 

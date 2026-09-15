@@ -44,6 +44,10 @@
         <DocPane :node-id="node.id" />
       </el-tab-pane>
 
+      <el-tab-pane label="回归测试" name="regression">
+        <RegressionPane :node-id="node.id" />
+      </el-tab-pane>
+
       <el-tab-pane label="交付" name="delivery">
         <div class="delivery-head">
           <el-tag :type="deliveryTagType(gate.decision)" effect="dark" size="large">{{ deliveryDecisionLabel(gate.decision) }}</el-tag>
@@ -183,6 +187,7 @@ import { ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api.js'
 import DocPane from './DocPane.vue'
+import RegressionPane from './RegressionPane.vue'
 import DiffPane from './DiffPane.vue'
 
 const props = defineProps({ node: Object, visible: Boolean, initialTab: { type: String, default: 'info' } })
