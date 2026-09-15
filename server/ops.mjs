@@ -61,6 +61,9 @@ export const TOOLS = [
   'mindmap',
   'secret_scan',
   'delivery_gate',
+  'delivery_snapshot_capture',
+  'delivery_snapshot_list',
+  'delivery_snapshot_get',
   'release_item_list',
   'release_item_upsert',
   'release_item_update',
@@ -1728,6 +1731,53 @@ export async function cleanupWorkspace(store, nodeRef, { confirm = false, remove
     removed: results.filter((r) => r.worktreeRemoved || r.worktreeAlreadyRemoved).length,
     results
   }
+}
+
+/**
+ * 交付快照导出：显式展示「冻结结论 / 当前核对状态」。
+ * 快照不是实时门禁的替代品；drifted 时必须同时展示当时结论与当前结论。
+ */
+export function renderDeliverySnapshotMd(snapshot) {
+  const cell = (v) =>
+    String(v == null ? '' : v)
+      .replace(/\\/g, '\\\\')
+      .replace(/\|/g, '\\|')
+      .replace(/#/g, '\\#')
+      .replace(/\r\n|\r|\n/g, ' ')
+  const decisionText = {
+    ready: '可交付',
+    not_ready: '不可交付',
+    unknown: '待判定'
+  }[snapshot.decision] || snapshot.decision
+  const driftText = {
+    current: '与当前证据一致',
+    drifted: `已偏离（当前结论：${snapshot.drift?.currentDecision || 'unknown'}）`,
+    unknown: '无法核对当前证据'
+  }[snapshot.drift?.status] || snapshot.drift?.status || '未知'
+  const lines = [
+    `# 交付快照 #${snapshot.id}：${cell(snapshot.gate?.node?.name || snapshot.nodeId)}`,
+    '',
+    `- 冻结时间：${snapshot.createdAt}`,
+    `- 操作者：${snapshot.createdBy}`,
+    `- 范围：${snapshot.scope === 'subtree' ? '含子树' : '仅本节点'}`,
+    `- 冻结结论：${decisionText}`,
+    `- 当前核对：${driftText}`,
+    `- 证据指纹：${snapshot.fingerprint}`,
+    snapshot.note ? `- 备注：${cell(snapshot.note)}` : null,
+    '',
+    '## 冻结依据',
+    '',
+    '| 来源 | 结论 | 说明 |',
+    '|---|---|---|'
+  ].filter((line) => line !== null)
+  for (const s of snapshot.gate?.sources || []) {
+    lines.push(`| ${cell(s.label)} | ${cell(s.status)} | ${cell(s.detail)} |`)
+  }
+  if ((snapshot.gate?.blockers || []).length) {
+    lines.push('', '## 冻结时的阻塞项', '', '| 来源 | 阻塞项 | 说明 |', '|---|---|---|')
+    for (const b of snapshot.gate.blockers) lines.push(`| ${cell(b.label)} | ${cell(b.name)} | ${cell(b.detail)} |`)
+  }
+  return lines.join('\n')
 }
 
 /**

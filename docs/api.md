@@ -719,6 +719,32 @@ curl -s 'http://127.0.0.1:3210/api/nodes/1/delivery-gate?format=md'
 > 验收来源只聚合**启用中**的用例；停用用例不算 `notRun`、也不阻塞交付。
 > 测试全部通过后仍需有效验收签收：`pending` / `rejected` / `stale` 都会阻塞交付，避免把测试绿灯冒充业务验收。
 
+### 交付证据快照（验收留痕 / 上线审计）
+
+实时交付门禁会随源数据变化；快照用于冻结“当时凭什么放行”。
+
+```bash
+# 冻结当前结论（保存完整证据与指纹）
+curl -s -X POST http://127.0.0.1:3210/api/nodes/1/delivery-snapshots \
+  -H 'content-type: application/json' \
+  -d '{"scope":"self","note":"2026-09 上线批次"}'
+
+# 列出快照：current = 与当前证据一致；drifted = 源数据已变化
+curl -s 'http://127.0.0.1:3210/api/nodes/1/delivery-snapshots?scope=self'
+
+# 单条快照；markdown 可直接贴进验收 / 上线记录
+curl -s 'http://127.0.0.1:3210/api/delivery-snapshots/1?format=md'
+
+# CLI / MCP 等价入口
+# node bin/taskboard.js delivery snapshot "项目A/需求1" [--scope self|subtree] [--note <备注>]
+# node bin/taskboard.js delivery snapshots "项目A/需求1" [--scope self|subtree] [--limit N]
+# node bin/taskboard.js delivery snapshot-get <sid> [--format json|md]
+# MCP: delivery_snapshot_capture / delivery_snapshot_list / delivery_snapshot_get
+```
+
+> `drifted` **不会改写冻结结论**：它只表示当时的证据已与现状不同。
+> 验收 / 上线审计应同时看「冻结结论」与「当前核对」，不能拿快照冒充实时门禁。
+
 ## 错误码速查
 
 | HTTP | code | 场景 |

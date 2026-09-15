@@ -11,7 +11,7 @@ test('openDb 建出全部表并开启 WAL / 外键', async () => {
     .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
     .all()
     .map((r) => r.name)
-  for (const t of ['nodes', 'attr_defs', 'attr_values', 'commits', 'mrs', 'documents', 'document_versions', 'repos', 'merges', 'unit_repos', 'test_cases', 'test_reports', 'acceptance_signoffs', 'release_items', 'meta']) {
+  for (const t of ['nodes', 'attr_defs', 'attr_values', 'commits', 'mrs', 'documents', 'document_versions', 'repos', 'merges', 'unit_repos', 'test_cases', 'test_reports', 'acceptance_signoffs', 'release_items', 'delivery_snapshots', 'meta']) {
     assert.ok(tables.includes(t), `缺表 ${t}`)
   }
   assert.equal(db.prepare('PRAGMA journal_mode').get().journal_mode, 'wal')
@@ -96,6 +96,7 @@ test('旧库迁移：旧 schema 直接打开，补出新列与索引且保留历
   assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='test_reports'").get().name, 'test_reports')
   assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='acceptance_signoffs'").get().name, 'acceptance_signoffs')
   assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='release_items'").get().name, 'release_items')
+  assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='delivery_snapshots'").get().name, 'delivery_snapshots')
   assert.equal(
     db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_release_items_node'").get().name,
     'idx_release_items_node'

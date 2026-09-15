@@ -40,6 +40,12 @@
   - `requirement-management`：需求条目创建时自动关联核心文档、列表筛选与 KPI、文档缺口统计、
     受控状态流转（合法路径 / 非法跳转 / 取消恢复）、通用 `node.update` 不能绕过状态机；
     HTTP / CLI / MCP 三入口一致
+  - `delivery-snapshot`：交付证据快照——冻结完整门禁 JSON 与 SHA-256 指纹、写入只 +1 revision、
+    无改动时 `current`、源证据变化后 `drifted` 且不回改冻结结论、`scope=subtree` 与列表隔离、
+    非法 scope / 不存在快照返回稳定错误码、节点删除级联清理；
+    HTTP / CLI / MCP 三入口捕获 / 列表 / 单条读取全链路；MCP 写入操作者记录为 `mcp`（防审计身份被降级成 user）；
+    Markdown 导出的标题 / 备注转义（反斜杠、竖线、CommonMark 全行结束符 LF/CRLF/CR）与注入防护；
+    指纹只认证据集合：展示字段与时间戳审计元数据不触发漂移，节点 / 上线项改名与 no-op 重存保持 current，status/content 变化仍 drifted
   - `scope-validation`：`scope` 值域与聚合构建器横切校验；MCP 吃 `scope` 的全部工具（含 `node_diffs` / `node_tracks` / `commit_duplicates` / `release_check`）非法值均返回 `isError + VALIDATION_FAILED`，不泄漏 SDK `-32602`
   - `run-finalize`：**派单自动收尾**（`finalizeReportsForRun`）——按输出逐条结论回写 pass/fail、无结论→blocked、失败→error、超时/取消→cancelled、不覆盖人工终态、自动结论可被人工无 `overwrite` 改正、收尾只 +1 revision；**进程级**用真实 CLI 子进程验证 `test run` / `release check` 非 dry-run 收尾到终态并回写报告，`--no-wait` 保留只派单语义；边界（upsert 只传部分字段不清空其余、名称 trim 唯一性、大小写口径、`release check scope=subtree`）
   - `release-upsert-consistency`：**三入口语义对齐**——`release item upsert` 的「新建取默认值 / 已存在只更新显式字段」在 store / HTTP / CLI（真实子进程）/ MCP（in-memory 协议）逐一对齐；重点防「入口补默认值导致 rollback / status / required 被静默回退」，每条断言在旧实现（CLI / MCP 装配处补默认值）上都会失败

@@ -362,6 +362,22 @@ CREATE TABLE IF NOT EXISTS release_items (
 );
 CREATE INDEX IF NOT EXISTS idx_release_items_node ON release_items(node_id, sort, id);
 
+-- 交付证据快照：冻结某一刻的交付门禁结论与依据，用于验收留痕 / 上线审计。
+-- 与 readiness / delivery-gate 的实时聚合不同，本表只在显式 capture 时写入，记录不可变。
+CREATE TABLE IF NOT EXISTS delivery_snapshots (
+  id INTEGER PRIMARY KEY,
+  node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+  scope TEXT NOT NULL CHECK (scope IN ('self','subtree')),
+  decision TEXT NOT NULL CHECK (decision IN ('ready','not_ready','unknown')),
+  ready INTEGER,
+  fingerprint TEXT NOT NULL,
+  gate_json TEXT NOT NULL,
+  note TEXT,
+  created_at TEXT NOT NULL,
+  created_by TEXT NOT NULL DEFAULT 'user'
+);
+CREATE INDEX IF NOT EXISTS idx_delivery_snapshots_node ON delivery_snapshots(node_id, id);
+
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -592,6 +608,23 @@ function migrate(db) {
     SELECT d.id, d.name, d.content, 'migrated', d.updated_at, d.updated_by
       FROM documents d
      WHERE NOT EXISTS (SELECT 1 FROM document_versions v WHERE v.document_id = d.id);
+  `)
+
+  // 交付证据快照（v6）：老库补表；SCHEMA 只对新库生效
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS delivery_snapshots (
+      id INTEGER PRIMARY KEY,
+      node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+      scope TEXT NOT NULL CHECK (scope IN ('self','subtree')),
+      decision TEXT NOT NULL CHECK (decision IN ('ready','not_ready','unknown')),
+      ready INTEGER,
+      fingerprint TEXT NOT NULL,
+      gate_json TEXT NOT NULL,
+      note TEXT,
+      created_at TEXT NOT NULL,
+      created_by TEXT NOT NULL DEFAULT 'user'
+    );
+    CREATE INDEX IF NOT EXISTS idx_delivery_snapshots_node ON delivery_snapshots(node_id, id);
   `)
 
   // max_attempts 从「死字段」升级为硬上限（默认 3）。老库的历史行都带着旧的默认 1，

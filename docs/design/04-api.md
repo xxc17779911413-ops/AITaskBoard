@@ -108,6 +108,10 @@
 | Method | Path | 说明 |
 |---|---|---|
 | GET | `/api/nodes/:id/delivery-gate` | 交付门禁：`?scope=self\|subtree`，`?format=json\|md`。汇总 `readiness` / `acceptance` / `release` 三个来源，每个来源为 `pass` / `fail` / `not_applicable`；验收来源要求测试全过且验收签收有效（`accepted`），`pending/rejected/stale` 都会阻塞；最终 `decision` 为 `ready` / `not_ready` / `unknown`；**纯读聚合，不写库、不动 revision** |
+| GET | `/api/nodes/:id/delivery-gate` | 交付门禁：`?scope=self\|subtree`，`?format=json\|md`。汇总 `readiness` / `acceptance` / `release` 三个来源，每个来源为 `pass` / `fail` / `not_applicable`；最终 `decision` 为 `ready` / `not_ready` / `unknown`（全不适用时 `ready=null`，不伪造成绿灯）；`acceptance` 中 `running`/`notRun` 也视为未取得交付证据；**纯读聚合，不写库、不动 revision** |
+| POST | `/api/nodes/:id/delivery-snapshots` | 冻结当前交付证据快照：`{scope?, note?}`；保存完整门禁 JSON + SHA-256 指纹，返回快照（含 `drift.status=current`）；显式写入，只递增一次 revision |
+| GET | `/api/nodes/:id/delivery-snapshots` | 交付快照列表（倒序）：`?scope=self\|subtree`、`?limit=`；每条实时核对并返回 `drift.status=current\|drifted` |
+| GET | `/api/delivery-snapshots/:sid` | 单条快照：`?format=json\|md`；冻结结论原样返回，核对状态与时点结论分开展示 |
 
 聚合类接口的 `scope` / `format` 均为枚举参数：`scope=self|subtree`（缺省 `self`）、`format=json|md`（缺省 `json`）；
 其它取值一律 `400 VALIDATION_FAILED`，三入口不做静默降级。交付门禁的验收来源只聚合**启用中**的测试用例：

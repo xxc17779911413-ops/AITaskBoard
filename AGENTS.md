@@ -109,6 +109,8 @@ docs/design.md    ← 主设计文档权威副本
 门禁  requirement_readiness · mindmap · delivery_gate
 设计  design_outline · design_outline_apply
 门禁  requirement_readiness · secret_scan · delivery_gate
+门禁  requirement_readiness · delivery_gate
+      交付快照 delivery_snapshot_capture · delivery_snapshot_list · delivery_snapshot_get
 回归  test_case_list · test_case_upsert · test_case_update · test_case_remove · test_case_reorder
       test_run · test_report_list · test_report_get · test_report_finish · acceptance_report
       acceptance_status · acceptance_sign
@@ -163,6 +165,9 @@ design outline "项目A/需求1" [--scope subtree] [--format md]   # 概要设�
 design apply "项目A/需求1" [--scope subtree] [--overwrite]     # 写入「概要设计」文档（默认不覆盖已填写内容）
 secret scan "项目A/需求1" [--scope subtree] [--format md]      # 文档敏感信息扫描（只读，命中值脱敏）
 delivery gate "项目A/需求1" [--scope subtree] [--format md]    # 交付门禁（需求就绪 + 测试验收 + 上线治理的最终汇总）
+delivery snapshot "项目A/需求1" [--note 备注]                  # 冻结当前交付证据（完整依据 + 指纹）
+delivery snapshots "项目A/需求1" [--scope subtree]             # 快照列表（current / drifted）
+delivery snapshot-get <sid> [--format md]                       # 单条快照（可贴验收 / 上线记录）
 
 release item upsert "项目A/需求1" --name "执行上线 SQL" --kind sql --content "ALTER TABLE …" --rollback "DROP …"
 release item list "项目A/需求1" [--kind config|sql|check] [--status pending|ready|done|blocked|skipped]
@@ -185,6 +190,8 @@ release check "项目A/需求1" [--scope subtree] [--dry-run] [--no-wait]   # �
 
 **写操作会记录 actor**：CLI 默认 `cli`，MCP 为 `mcp`（早期工具为 `ai`），Web 为 `user`，导入为 `import`；
 可用 `--actor ai` 覆盖。值域外一律回退 `user`（`store.mjs` 的 `ACTORS` 单点校验）。UI 上有徽标区分。
+**写操作会记录 actor**：CLI 默认 `cli`，MCP 工具的显式回写为 `mcp`，Web 为 `user`，导入为 `import`，
+服务内部为 `system`；CLI 可用 `--actor ai` 覆盖。UI 上有徽标区分。
 
 ## 关键约束（不要做）
 

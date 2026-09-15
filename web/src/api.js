@@ -84,6 +84,10 @@ export default {
     api(
       `/nodes/${nodeId}/mindmap?scope=${scope || 'self'}${maxDepth ? `&maxDepth=${maxDepth}` : ''}`
     ),
+  deliverySnapshotCapture: (nodeId, data) =>
+    api(`/nodes/${nodeId}/delivery-snapshots`, { method: 'POST', body: JSON.stringify(data) }),
+  deliverySnapshots: (nodeId, scope) =>
+    api(`/nodes/${nodeId}/delivery-snapshots${scope ? `?scope=${encodeURIComponent(scope)}` : ''}`),
 
   // commit
   commitList: (nodeId, subtree) => api(`/nodes/${nodeId}/commits${subtree ? '?subtree=true' : ''}`),

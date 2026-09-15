@@ -1,0 +1,12 @@
+import { tempHome } from './test/helpers.mjs'
+const tmp=await tempHome(); const store=tmp.store.createStore(tmp.openDb())
+const p=store.createNode({type:'project',name:'P'})
+const r=store.createNode({parentId:p.id,type:'requirement',name:'R'})
+store.upsertDocument(r.id,'需求内容','需求正文'); store.upsertDocument(r.id,'概要设计','设计正文')
+const tc=store.upsertTestCase(r.id,{name:'回归用例',prompt:'跑单测'})
+const rep=store.createTestReport(r.id,{caseId:tc.id,status:'running',kind:'regression'}); store.finishTestReport(rep.id,{status:'pass',summary:'全绿'})
+store.upsertAcceptanceSignoff(p.id,{decision:'accepted',comment:'子树验收',scope:'subtree'})
+const g=store.buildDeliveryGate(p.id,{scope:'subtree'})
+console.log('subtree gate=',g.decision, g.sources.map(s=>`${s.key}=${s.status}`).join(' '))
+const st=store.buildAcceptanceStatus(p.id,{scope:'subtree'})
+console.log('acc state=',st.state,'cases=',st.report.totals.cases)
