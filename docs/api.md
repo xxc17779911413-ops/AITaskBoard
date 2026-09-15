@@ -449,6 +449,8 @@ curl -s -X POST http://127.0.0.1:3210/api/merges/12/resolve \
 且路径必须位于 worktree 内；resolve 后仍需显式 `merge confirm` 才置 `resolved`。
 写入前会对目标与父目录做 `lstat` 检查并拒绝符号链接，再用 `realpath` 复核真实落点仍在 worktree 内。
 若 resolve 内容与目标版本一致，返回 `changed:false` + 说明，不产出空补丁。
+目标父目录不存在时会递归创建；目标侧文件原本不存在（modify/delete）时会生成 git 原生
+new-file 补丁（`--- /dev/null` + `new file mode`），可直接在目标分支 `git apply`。
 
 ## agent 运行时 / 会话 / 任务
 

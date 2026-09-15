@@ -39,6 +39,14 @@ hunk 内容行以 `-- ` / `++ ` 开头也不会被误当头行改写。**禁止*
 **R3 worktree 写入必须 realpath/lstat 级校验（N7 回归点）**：只做
 `path.resolve` + `startsWith` 会被符号链接绕过。写入前逐级 `lstat`，拒绝目标或任一父目录
 是符号链接；目标已存在时用 `realpath` 复核真实落点仍在 `realpath(worktreeRoot)` 内。
+不存在的路径段视为安全并停止 `realpath` 校验（N9a）——缺失的路径不可能包含符号链接逃逸；
+写入时再由 `mkdirSync` 递归创建缺失父目录。任何拒绝都必须抛 `AppError` + 稳定业务码，
+不得漏出裸 `ENOENT`。
 
 **R4 无变更时不产出空补丁（N8 回归点）**：resolve 内容若与目标版本一致，
 返回 `changed:false` + `note`，不再给一个下游 `git apply` 会拒绝的空 patch。
+
+**R5 补丁覆盖单侧缺失语义（N9b 回归点）**：`unifiedFilePatch` 必须区分
+「目标存在 → 内容变更」「目标不存在（`before === null`）→ 新建」「目标被删除（`after === null`）→ 删除」。
+单侧缺失时生成 git 原生 new-file / delete-file 补丁（`--- /dev/null` + `new file mode` 或
+`deleted file mode`），使 `git apply` 能在目标分支真实文件缺失时成功应用。

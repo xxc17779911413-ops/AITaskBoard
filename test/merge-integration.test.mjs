@@ -483,6 +483,72 @@ test('N8：resolve 内容与目标一致时 changed=false，不返回会被误 a
   assert.match(out.patches[0].note, /无需应用补丁/)
 })
 
+test('N9a 回归：父目录不存在时可正常写入 worktree，且拒绝仍走稳定错误码', async (t) => {
+  const { tmp, store, ops, repo, task } = await setup()
+  t.after(() => {
+    tmp.cleanup()
+    fs.rmSync(repo.root, { recursive: true, force: true })
+  })
+  makeDirConflict(repo, 'deep')
+  const run = await ops.runMerge(store, task.id, { confirm: true })
+  const wt = path.join(repo.root, 'wt-n9a')
+  const { addWorktree } = await import('../server/git.mjs')
+  repo.g(['branch', 'holder-n9a', 'feature-send-receive'])
+  await addWorktree(repo.dir, { worktreePath: wt, branch: 'holder-n9a', baseBranch: 'feature-send-receive' })
+  store.updateUnitRepo(store.listUnitRepos(task.id)[0].id, { worktreePath: wt })
+
+  // 删掉整个 deep/ 目录，模拟 target 删除文件后父目录不存在
+  fs.rmSync(path.join(wt, 'deep'), { recursive: true, force: true })
+  const out = await ops.resolveMergeConflicts(store, run.conflicts[0].id, {
+    files: [{ path: 'deep/a.txt', content: 'resolved\n' }],
+    writeToWorktree: true
+  })
+  assert.equal(out.files[0].wroteWorktree, true)
+  assert.equal(fs.readFileSync(path.join(wt, 'deep/a.txt'), 'utf8'), 'resolved\n')
+
+  // 非 worktree 路径 / 符号链接场景仍是 AppError 稳定码，不泄漏 ENOENT
+  const safe = await ops.resolveMergeConflicts(store, run.conflicts[0].id, {
+    files: [{ path: 'deep/a.txt', content: 'again\n' }],
+    writeToWorktree: false
+  })
+  assert.equal(safe.files[0].changed, true)
+})
+
+test('N9b 回归：target 删除文件后 resolve 写回 → 生成 new-file 补丁且可 apply', async (t) => {
+  const { tmp, store, ops, repo, task } = await setup()
+  t.after(() => {
+    tmp.cleanup()
+    fs.rmSync(repo.root, { recursive: true, force: true })
+  })
+  // target 删除 a.txt；source 修改 a.txt → modify/delete 冲突
+  repo.g(['checkout', '-q', 'feature-send-receive'])
+  fs.rmSync(path.join(repo.dir, 'a.txt'))
+  repo.g(['add', '-A'])
+  repo.g(['commit', '-q', '-m', 'delete a'])
+  repo.g(['checkout', '-q', 'feature-send-receive-login'])
+  fs.writeFileSync(path.join(repo.dir, 'a.txt'), 'source\n')
+  repo.g(['add', '.'])
+  repo.g(['commit', '-q', '-m', 'modify a'])
+
+  const run = await ops.runMerge(store, task.id, { confirm: true })
+  assert.equal(run.conflicts.length, 1)
+  const mid = run.conflicts[0].id
+  const detail = await ops.getMergeConflicts(store, mid)
+  assert.equal(detail.files[0].ours, null, 'target 侧 a.txt 应不存在')
+
+  const out = await ops.resolveMergeConflicts(store, mid, { files: [{ path: 'a.txt', content: 'recreated\n' }] })
+  assert.equal(out.patches[0].changed, true)
+  assert.match(out.patches[0].patch, /^--- \/dev\/null$/m, 'new-file 补丁应指向 /dev/null')
+  assert.match(out.patches[0].patch, /^new file mode /m)
+
+  repo.g(['checkout', '-q', 'feature-send-receive'])
+  const patchFile = path.join(repo.root, 'n9b.patch')
+  fs.writeFileSync(patchFile, out.patches[0].patch)
+  repo.g(['apply', '--check', patchFile])
+  repo.g(['apply', patchFile])
+  assert.equal(fs.readFileSync(path.join(repo.dir, 'a.txt'), 'utf8'), 'recreated\n')
+})
+
 test('ops merge：缺 confirm / 分支缺失 / 类型非法给稳定错误码', async (t) => {
   const { tmp, store, ops, repo, task, s } = await setup()
   t.after(() => {

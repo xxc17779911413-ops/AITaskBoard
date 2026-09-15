@@ -1854,6 +1854,7 @@ function ensureWorktreePathSafe(worktreeDir, rootReal, relativePath) {
   const rootAbs = path.resolve(worktreeDir)
   const parts = String(relativePath).split('/').filter((p) => p && p !== '.')
   let cur = rootAbs
+  let lastExisting = rootAbs
   for (let i = 0; i < parts.length; i += 1) {
     const part = parts[i]
     if (part === '..') {
@@ -1864,8 +1865,12 @@ function ensureWorktreePathSafe(worktreeDir, rootReal, relativePath) {
     try {
       st = fs.lstatSync(cur)
     } catch {
+      // 路径段不存在：不存在就不可能有符号链接逃逸；停止后续 realpath 校验，
+      // 只要最近的已存在祖先仍在 worktree 内即可（N9a）。
       st = null
+      break
     }
+    lastExisting = cur
     const isLast = i === parts.length - 1
     if (st && st.isSymbolicLink()) {
       throw new AppError(CODES.VALIDATION_FAILED, `冲突路径包含符号链接，拒绝写入：${relativePath}`, {
@@ -1877,8 +1882,7 @@ function ensureWorktreePathSafe(worktreeDir, rootReal, relativePath) {
       throw new AppError(CODES.VALIDATION_FAILED, `冲突路径是目录，无法写入：${relativePath}`, { file: relativePath })
     }
   }
-  const existing = fs.existsSync(cur) ? cur : path.dirname(cur)
-  const real = fs.realpathSync(existing)
+  const real = fs.realpathSync(lastExisting)
   if (real !== rootReal && !real.startsWith(rootReal + path.sep)) {
     throw new AppError(CODES.VALIDATION_FAILED, `冲突路径的真实落点越出 worktree：${relativePath}`, {
       file: relativePath,

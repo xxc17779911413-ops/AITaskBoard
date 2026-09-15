@@ -16,6 +16,7 @@
   - `merges`：状态机（`precheck_conflict` → `resolved` / `merged`）、批量按序合并遇冲突停下、abort 不改分支
   - `conflicts`：三方内容读取（base / ours / theirs）、resolve 最终内容 + `contentHash`、统一补丁可 `git apply`、可选写入 worktree 且路径越界防护、resolve 不改分支也不自动置 resolved
   - `conflicts` 回归（N6–N8）：内容行以 `-- ` / `++ ` 开头时补丁仍可 apply 且不写坏；worktree 内目标 / 父目录是符号链接时拒绝写入且外部文件不变；resolve 与目标一致时 `changed:false`、不产出空补丁
+  - `conflicts` 回归（N9）：父目录不存在时正常递归创建并写入 worktree（不抛裸 `ENOENT`，拒绝仍保持 `AppError` 稳定码）；target 删除文件后 resolve 写回时生成 new-file 补丁并可 `git apply`
   - `merge-integration`：`merges` 状态机 CRUD 与 state 校验；真 git 下 `precheckMerge` **只读**（冲突时 `merge-tree` exit=1 也能解析出冲突文件，不改目标/源分支）；`runMerge` 无冲突 `merge --no-ff` 落 `merged` + `merge_sha`、重复调用幂等、成功后恢复发起前 HEAD；冲突落 `precheck_conflict` 且不改分支；缺 `confirm` / 分支缺失 / 非工作单元类型给稳定错误码
   - `merge-integration` 回归（N2–N4）：冲突清单按 `merge-tree --name-only -z` 的 NUL 分隔解析——`conflict.txt` / `ConflictPane.vue` / `Auto-merging.md` 前缀型命名不被误删，`中文.txt` 原样 UTF-8 落库；`merged`/`aborted` 行拒绝 `confirm`、未显式给 `mergeSha` 不拿 `target_sha` 冒充；从第三分支发起合并成功后 HEAD 恢复到原分支
   - `merge-integration` 回归（N5）：detached HEAD 发起合并时用 `rev-parse HEAD` 记录具体 sha、用 `symbolic-ref -q HEAD` 判定 detached；成功后 `checkout --detach <sha>` 恢复，`restoredHead` 报该 sha

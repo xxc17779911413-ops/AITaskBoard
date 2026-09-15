@@ -439,6 +439,44 @@ export async function conflictDetails(dir, filePath, { baseSha = null, targetSha
  */
 export async function unifiedFilePatch(dir, filePath, before, after) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'taskboard-patch-'))
+  const beforeMissing = before == null
+  const afterMissing = after == null
+  // 删除语义：after 明确为 null 表示删除文件。
+  if (!beforeMissing && afterMissing) {
+    const beforeFile = path.join(tmp, 'a', filePath)
+    fs.mkdirSync(path.dirname(beforeFile), { recursive: true })
+    fs.writeFileSync(beforeFile, String(before))
+    const r = await runGitDiffNoIndex(tmp, [
+      'diff',
+      '--no-index',
+      '--no-color',
+      '--src-prefix=',
+      '--dst-prefix=',
+      '--',
+      path.join('a', filePath),
+      '/dev/null'
+    ])
+    fs.rmSync(tmp, { recursive: true, force: true })
+    return normalizeNewDeletePatch(String(r.stdout || ''), filePath)
+  }
+  // 新建语义：before 为 null / '' 表示目标侧文件不存在。
+  if (beforeMissing) {
+    const afterFile = path.join(tmp, 'b', filePath)
+    fs.mkdirSync(path.dirname(afterFile), { recursive: true })
+    fs.writeFileSync(afterFile, after == null ? '' : String(after))
+    const r = await runGitDiffNoIndex(tmp, [
+      'diff',
+      '--no-index',
+      '--no-color',
+      '--src-prefix=',
+      '--dst-prefix=',
+      '--',
+      '/dev/null',
+      path.join('b', filePath)
+    ])
+    fs.rmSync(tmp, { recursive: true, force: true })
+    return normalizeNewDeletePatch(String(r.stdout || ''), filePath)
+  }
   // 把临时文件放在 a/<path> / b/<path> 结构下，让 git 直接产出正确的 a/、b/ 头，
   // 避免对 diff 文本做任何「按行前缀」改写——那会误伤以 `-- ` / `++ ` 开头的 hunk 内容（N6）。
   const beforeFile = path.join(tmp, 'a', filePath)
@@ -479,6 +517,35 @@ export async function unifiedFilePatch(dir, filePath, before, after) {
     throw new AppError(CODES.GIT_FAILED, `生成补丁失败：${filePath}`, { stderr: String(r.stderr || '').slice(0, 1000) })
   }
   return String(r.stdout || '')
+}
+
+/** 执行 `git diff --no-index` 并把「无差异 / 单侧缺失」的错误转成稳定码 */
+async function runGitDiffNoIndex(cwd, args) {
+  try {
+    const { stdout } = await execFileP('git', ['-C', cwd, ...args], { maxBuffer: MAX_BUFFER, encoding: 'utf8' })
+    return { ok: true, code: 0, stdout }
+  } catch (e) {
+    if (e && e.code === 'ENOENT') throw new AppError(CODES.GIT_UNAVAILABLE, '本机 git 不可用（命令不存在）')
+    const code = typeof e.code === 'number' ? e.code : 1
+    if (code !== 1) {
+      throw new AppError(CODES.GIT_FAILED, '生成补丁失败', {
+        stderr: String((e && (e.stderr || e.message)) || '').slice(0, 1000)
+      })
+    }
+    return { ok: false, code: 1, stdout: String((e && e.stdout) || ''), stderr: String((e && e.stderr) || '') }
+  }
+}
+
+/** 归一 new-file / delete-file 补丁的 a/ b/ 前缀（只处理头行，不动 hunk 内容）。 */
+function normalizeNewDeletePatch(patch, filePath) {
+  const lines = String(patch || '').split('\n')
+  const out = lines.map((line) => {
+    if (line.startsWith('diff --git ')) return `diff --git a/${filePath} b/${filePath}`
+    if (line.startsWith('--- ') && !line.includes('/dev/null')) return `--- a/${filePath}`
+    if (line.startsWith('+++ ') && !line.includes('/dev/null')) return `+++ b/${filePath}`
+    return line
+  })
+  return out.join('\n')
 }
 
 /**

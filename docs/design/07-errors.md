@@ -30,6 +30,8 @@
 | 冲突 resolve 写入未登记 worktree | 400 `VALIDATION_FAILED`（`writeToWorktree:true` 但没有 `unit_repos.worktree_path` 或目录不存在） |
 | 冲突 resolve 写入符号链接 / 越界真实路径 | 400 `VALIDATION_FAILED`（`lstat` 拒绝符号链接，`realpath` 复核真实落点仍在 worktree 内；不跟随链接写外部文件） |
 | 冲突 resolve 内容与目标一致 | 200，`changed:false` + `note`；不返回会被 `git apply` 拒绝的空补丁 |
+| 冲突 resolve 目标父目录不存在 | 正常递归创建并写入；不抛裸 `ENOENT`（缺失路径段视为安全，安全校验只对已存在路径做 realpath） |
+| 冲突 resolve 目标侧文件不存在 | 生成 git 原生 new-file 补丁（`--- /dev/null` + `new file mode`），目标分支可 `git apply` |
 | 本机 git 不可用 / 命令失败 | 500 `GIT_UNAVAILABLE` / `GIT_FAILED`（`details` 带原始 stderr） |
 | GitLab 未配置 | 400 + 「前往设置页配置」提示 |
 | GitLab 401 / 404 | 502（`details` 区分 token 无效 / 项目路径错误） |
