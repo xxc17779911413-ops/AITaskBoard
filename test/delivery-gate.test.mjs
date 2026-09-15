@@ -196,3 +196,18 @@ test('delivery_gate：登记进能力清单（MCP / CLI / REST 1:1 的发现入�
   const { TOOLS } = await import('../server/ops.mjs')
   assert.ok(TOOLS.includes('delivery_gate'))
 })
+
+test('delivery_gate：检查用例（code/biz/release_check）未 pass 时上线来源 fail，并列入阻塞项', async (t) => {
+  const { tmp, store, r } = await setup()
+  t.after(() => tmp.cleanup())
+  const testCase = makeReadinessPass(store, r.id)
+  makeAcceptancePass(store, r.id, testCase.id)
+  // 必做上线项全 done，但登记的代码检查从没跑过 —— 旧实现会给 ready（假绿灯）
+  store.createReleaseItem(r.id, { name: '开灰度开关', kind: 'config', status: 'done' })
+  store.createTestCase(r.id, { name: '静态检查', prompt: '跑 lint', kind: 'code_check' })
+
+  const gate = store.buildDeliveryGate(r.id)
+  assert.equal(gate.decision, 'not_ready')
+  assert.equal(sourceOf(gate, 'release').status, 'fail')
+  assert.ok(gate.blockers.some((b) => b.source === 'release' && b.name === '静态检查'))
+})

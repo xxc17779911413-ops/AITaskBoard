@@ -2,7 +2,7 @@
   <div class="regression-pane">
     <div class="accept-head">
       <el-tag size="large" effect="dark" :type="acceptTagType">{{ acceptLabel }}</el-tag>
-      <el-select v-model="scope" size="small" style="width:120px" @change="loadAcceptance">
+      <el-select v-model="scope" size="small" style="width:120px" @change="loadAcceptanceScope">
         <el-option label="仅本节点" value="self" />
         <el-option label="含子树" value="subtree" />
       </el-select>
@@ -19,6 +19,37 @@
       title="分桶总数与用例数不一致，请检查报告状态"
       style="margin-bottom:8px"
     />
+
+    <el-divider content-position="left">验收结论（测试 + 文档缺口）</el-divider>
+    <div class="conclusion-block">
+      <el-tag size="small" effect="dark" :type="conclusionTagType">{{ conclusionLabel }}</el-tag>
+      <span class="conclusion-summary">{{ conclusionSummary }}</span>
+    </div>
+    <el-table
+      v-if="(conclusion.items || []).length"
+      :data="conclusion.items"
+      size="small"
+      border
+      stripe
+      style="margin-bottom:12px"
+    >
+      <el-table-column prop="name" label="需求" min-width="140" />
+      <el-table-column label="版本" width="90">
+        <template #default="{ row }">{{ row.version || '—' }}</template>
+      </el-table-column>
+      <el-table-column label="结论" width="100">
+        <template #default="{ row }">
+          <el-tag size="small" :type="conclusionItemTagType(row.decision)">{{ conclusionItemLabel(row.decision) }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column prop="caseCount" label="用例" width="70" />
+      <el-table-column label="文档缺口" min-width="200">
+        <template #default="{ row }">
+          <span v-if="!row.docBlockers?.length">—</span>
+          <span v-else>{{ row.docBlockers.map((d) => d.label).join('、') }}</span>
+        </template>
+      </el-table-column>
+    </el-table>
 
     <div class="case-toolbar">
       <el-button type="primary" size="small" @click="openCaseDialog()">+ 新建用例</el-button>
@@ -211,6 +242,7 @@ const finishing = ref(false)
 const cases = ref([])
 const reports = ref([])
 const acceptance = ref({ totals: {}, items: [] })
+const conclusion = ref({ decision: 'unknown', totals: {}, items: [] })
 const selectedCases = ref([])
 const kindFilter = ref('')
 const includeDisabled = ref(false)
@@ -245,6 +277,20 @@ const acceptTagType = computed(() => {
   return t.fail || t.blocked || t.error ? 'danger' : 'success'
 })
 
+const CONCLUSION_LABELS = { accepted: '验收通过', rejected: '验收未通过', unknown: '待判定' }
+const CONCLUSION_ITEM_LABELS = { pass: '通过', fail: '未通过', not_applicable: '不适用' }
+const conclusionLabel = computed(() => CONCLUSION_LABELS[conclusion.value.decision] || conclusion.value.decision)
+const conclusionTagType = computed(
+  () => ({ accepted: 'success', rejected: 'danger' })[conclusion.value.decision] || 'info'
+)
+const conclusionSummary = computed(() => {
+  const t = conclusion.value.totals || {}
+  if (!t.units) return '当前范围没有可判定的需求'
+  return `需求 ${t.units} · 通过 ${t.pass} · 未通过 ${t.fail} · 阻塞项 ${t.blockers}`
+})
+const conclusionItemLabel = (d) => CONCLUSION_ITEM_LABELS[d] || d
+const conclusionItemTagType = (d) => ({ pass: 'success', fail: 'danger' }[d] || 'info')
+
 const latestOf = (row) => (acceptance.value.items || []).find((i) => i.caseId === row.id)
 const caseName = (caseId) => cases.value.find((c) => c.id === caseId)?.name || (caseId ? `#${caseId}` : '（已删除用例）')
 
@@ -277,8 +323,16 @@ async function loadAcceptance() {
   acceptance.value = await api.acceptanceReport(props.nodeId, { scope: scope.value })
 }
 
+async function loadConclusion() {
+  conclusion.value = await api.acceptanceConclusion(props.nodeId, { scope: scope.value })
+}
+
+async function loadAcceptanceScope() {
+  await Promise.all([loadAcceptance(), loadConclusion()])
+}
+
 async function reloadAll() {
-  await Promise.all([loadCases(), loadReports(), loadAcceptance()])
+  await Promise.all([loadCases(), loadReports(), loadAcceptance(), loadConclusion()])
 }
 
 function openCaseDialog(row = null) {
@@ -418,6 +472,8 @@ watch(() => props.nodeId, reloadAll, { immediate: true })
 .accept-kpis { display:flex; gap:14px; flex-wrap:wrap; flex:1; }
 .accept-kpis :deep(.el-statistic) { min-width:64px; }
 .case-toolbar { display:flex; align-items:center; gap:8px; margin-bottom:8px; flex-wrap:wrap; }
+.conclusion-block { display:flex; align-items:center; gap:10px; margin-bottom:8px; }
+.conclusion-summary { font-size:12px; color:#606266; }
 .case-name { font-size:13px; color:#303133; }
 .case-prompt { font-size:12px; color:#909399; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .report-toolbar { margin-bottom:6px; }

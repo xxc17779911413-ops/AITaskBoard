@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { openDb } from './db.mjs'
 import { createStore } from './store.mjs'
 import { loadConfig, saveConfig, maskToken } from './config.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderDeliveryGateMd } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceConclusionMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderDeliveryGateMd } from './ops.mjs'
 import { startAgentRun, retryAndDispatch } from './agent.mjs'
 import { resolveRepoDir, pickBranchForCommit } from './git.mjs'
 
@@ -810,6 +810,19 @@ export function createMcpServer({ store }) {
       const n = store.resolveRef(String(node))
       const report = store.buildAcceptanceReport(n.id, { scope })
       const text = store.normalizeFormat(format) === 'md' ? renderAcceptanceMd(report) : JSON.stringify(report, null, 2)
+      return { content: [{ type: 'text', text }] }
+    })
+  )
+
+  server.tool(
+    'acceptance_conclusion',
+    '验收结论：按需求 / 版本汇总测试结论与文档缺口，给出逐需求与整体的验收判定；format=md 返回可贴进 issue 的 markdown',
+    { node: z.union([z.number(), z.string()]), scope: z.string().optional(), version: z.string().optional(), format: z.string().optional() },
+    mcpValidate(async ({ node, scope, version, format }) => {
+      const n = store.resolveRef(String(node))
+      const conclusion = store.buildAcceptanceConclusion(n.id, { scope, version: version || null })
+      const text =
+        store.normalizeFormat(format) === 'md' ? renderAcceptanceConclusionMd(conclusion) : JSON.stringify(conclusion, null, 2)
       return { content: [{ type: 'text', text }] }
     })
   )

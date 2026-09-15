@@ -1,6 +1,6 @@
 import express from 'express'
 import { AppError, CODES } from './errors.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, approveAndMerge, getMergeStatus, previewMerges, mergeUpstream, runTestCases, renderAcceptanceMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderDeliveryGateMd } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, approveAndMerge, getMergeStatus, previewMerges, mergeUpstream, runTestCases, renderAcceptanceMd, renderAcceptanceConclusionMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderDeliveryGateMd } from './ops.mjs'
 import { startAgentRun, retryAndDispatch } from './agent.mjs'
 import { resolveRepoDir, pickBranchForCommit } from './git.mjs'
 import { loadConfig, saveConfig, maskToken } from './config.mjs'
@@ -598,6 +598,22 @@ export function createApp({ store }) {
         return
       }
       res.json(report)
+    })
+  )
+  // 验收结论（按需求 / 版本）：合并逐需求测试结论与文档缺口，给一个可交付判断。
+  app.get(
+    '/api/nodes/:id/acceptance-conclusion',
+    wrap((req, res) => {
+      const node = store.resolveRef(refOf(req))
+      const conclusion = store.buildAcceptanceConclusion(node.id, {
+        scope: req.query.scope,
+        version: req.query.version || null
+      })
+      if (store.normalizeFormat(req.query.format) === 'md') {
+        res.type('text/markdown').send(renderAcceptanceConclusionMd(conclusion))
+        return
+      }
+      res.json(conclusion)
     })
   )
 

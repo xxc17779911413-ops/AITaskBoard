@@ -26,7 +26,18 @@
 按 `(node_id, name)` 唯一，`created` 标记让调用方知道是新建还是覆盖。
 
 **R4 就绪口径**：只有**必做项**（`required=1`）参与就绪判定，且必须落在 `done` / `skipped`；
-可选未完成不影响 `ready`。无必做项时 `ready=null`（与验收报告 `passRate=null` 同口径，避免「没有项 = 未就绪」误判）。
+可选未完成不影响 `ready`。空态（既无必做项也无检查用例）时 `ready=null`（与验收报告 `passRate=null` 同口径，避免「没有项 = 未就绪」误判）。
+
+**就绪必须纳入检查用例**：`ready` 不只取决于 `release_items`。登记的 `code_check` / `biz_check` / `release_check` 用例
+若最近一次不是 `pass`（含 `not_run` / `running` / `fail` / `blocked` / `error` / `cancelled`），同样阻塞上线——
+否则会出现「必做项全 done、代码检查没跑」的假绿灯。只取每用例**最近一条**报告，历史 pass 不掩盖后来的 fail；
+停用用例不阻塞（既不会被派单，也不该拦住上线）。就绪值域由 `store.RELEASE_CHECK_CASE_KINDS` 单点定义，
+与 `runReleaseChecks` 派单共用，避免「清单纳入」与「派单纳入」两处口径分叉。
+输出 `blockers`（必做项）与 `caseBlockers`（检查用例，带 `latestStatus` / `latestReportId`），
+并补 `totals.checkCases` / `checkPass` / `checkPending` / `checkRunning` 与 `byCaseKind` 分桶。
+
+**Web 面板**：抽屉「上线就绪」页签（`web/src/components/ReleasePane.vue` + `web/src/release.js`）展示结论、KPI、
+上线项 CRUD/行内改状态、检查用例最近结果与两类阻塞项，并支持「执行上线检查」先 `dryRun` 预演再派单。
 `blocked` 单列在 `totals.blocked` 且必然出现在 `blockers` 里。
 
 **R4.1 `done` 与 `skipped` 分开计数**：两者对就绪的效力相同（都算不必再处理），但含义不同。

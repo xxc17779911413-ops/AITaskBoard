@@ -1743,6 +1743,102 @@ export function createStore(db, options = {}) {
     }
   }
 
+  /**
+   * 验收结论聚合（按需求/版本生成）：把「测试结论」与「文档缺口」收敛成一个可交付判断。
+   *
+   * 复用三段既有数据，不落表、不 bump revision：
+   *   - 测试：`buildAcceptanceReport` 的逐用例最近结果（pass/fail/…/not_run）；
+   *   - 文档：`buildRequirementReadiness` 的逐需求门禁（需求内容 / 概要设计 / 可回归用例）；
+   *   - 版本：节点的「版本」属性（attribute key = version），供调用方按版本聚合过滤。
+   *
+   * 逐需求结论（item.decision）三态：
+   *   - `pass`：该需求的所有启用中用例最近一次均为 pass，且文档门禁全过；
+   *   - `fail`：有用例但存在未通过/未执行/执行中，或文档门禁未过；
+   *   - `not_applicable`：该需求没有任何可验收证据（无用例且无文档门禁项）。
+   * 整体 `ready` 对「没有任何可判定需求」返回 null，避免把空态伪造成绿灯。
+   */
+  function buildAcceptanceConclusion(nodeId, { scope = 'self', version = null } = {}) {
+    const root = rawNode(nodeId)
+    const effectiveScope = normalizeScope(scope)
+    const ids = effectiveScope === 'subtree' ? subtreeIds(nodeId) : [nodeId]
+    const unitIds = ids.filter((id) => {
+      const r = db.prepare('SELECT type FROM nodes WHERE id = ?').get(id)
+      return r && READINESS_UNIT_TYPES.has(r.type)
+    })
+
+    const acceptance = buildAcceptanceReport(nodeId, { scope: effectiveScope })
+    const readiness = unitIds.length > 0 ? buildRequirementReadiness(nodeId, { scope: effectiveScope }) : null
+    const readinessByNode = new Map((readiness ? readiness.units : []).map((u) => [u.nodeId, u]))
+    const acceptanceByNode = new Map()
+    for (const item of acceptance.items) {
+      if (!acceptanceByNode.has(item.nodeId)) acceptanceByNode.set(item.nodeId, [])
+      acceptanceByNode.get(item.nodeId).push(item)
+    }
+
+    const versionAttrOf = (id) => {
+      const attrs = getAttrs(id)
+      return attrs.version == null || attrs.version === '' ? null : String(attrs.version)
+    }
+
+    let items = unitIds.map((id) => {
+      const row = rawNode(id)
+      const node = nodeVO(row)
+      const cases = acceptanceByNode.get(id) || []
+      const readinessUnit = readinessByNode.get(id) || null
+      const caseProblems = cases.filter((c) => c.latestStatus !== 'pass')
+      const docBlockers = readinessUnit ? readinessUnit.checks.filter((c) => !c.passed) : []
+      const hasEvidence = cases.length > 0 || !!readinessUnit
+      return {
+        nodeId: id,
+        name: node.name,
+        type: node.type,
+        path: node.path,
+        version: versionAttrOf(id),
+        caseCount: cases.length,
+        latestStatuses: cases.map((c) => ({ caseId: c.caseId, name: c.name, status: c.latestStatus })),
+        docChecks: readinessUnit ? readinessUnit.checks.map((c) => ({ key: c.key, label: c.label, passed: c.passed, detail: c.detail })) : [],
+        decision: !hasEvidence ? 'not_applicable' : caseProblems.length === 0 && docBlockers.length === 0 ? 'pass' : 'fail',
+        caseBlockers: caseProblems.map((c) => ({ caseId: c.caseId, name: c.name, latestStatus: c.latestStatus })),
+        docBlockers: docBlockers.map((c) => ({ key: c.key, label: c.label, detail: c.detail }))
+      }
+    })
+
+    if (version != null && String(version).trim() !== '') {
+      const want = String(version).trim()
+      items = items.filter((i) => i.version === want)
+    }
+
+    const count = (d) => items.filter((i) => i.decision === d).length
+    const pass = count('pass')
+    const fail = count('fail')
+    const notApplicable = count('not_applicable')
+    const blockers = items.flatMap((i) => [
+      ...i.caseBlockers.map((c) => ({ nodeId: i.nodeId, name: i.name, source: 'test', label: c.name, detail: `最近结果：${c.latestStatus}` })),
+      ...i.docBlockers.map((c) => ({ nodeId: i.nodeId, name: i.name, source: 'document', label: c.label, detail: c.detail }))
+    ])
+    const applicable = pass + fail
+    return {
+      node: { id: root.id, name: root.name, type: root.type },
+      scope: effectiveScope,
+      version: version == null || String(version).trim() === '' ? null : String(version).trim(),
+      // 空态（没有可判定需求，或版本过滤后没有需求）返回 null，不用 false 冒充未通过。
+      ready: applicable === 0 ? null : fail === 0,
+      decision: applicable === 0 ? 'unknown' : fail === 0 ? 'accepted' : 'rejected',
+      totals: {
+        units: items.length,
+        pass,
+        fail,
+        notApplicable,
+        cases: acceptance.totals.cases,
+        testPass: acceptance.totals.pass,
+        testFail: acceptance.totals.fail,
+        blockers: blockers.length
+      },
+      items,
+      blockers
+    }
+  }
+
   // ---------- 上线治理（上线配置 / 上线 SQL / 上线检查清单） ----------
   //
   // 需求 → 概要设计/文档 → 回归测试（test_cases）→ 上线清单（release_items）。
@@ -1752,6 +1848,9 @@ export function createStore(db, options = {}) {
 
   const RELEASE_ITEM_KINDS = new Set(['config', 'sql', 'check'])
   const RELEASE_ITEM_STATUSES = new Set(['pending', 'ready', 'done', 'blocked', 'skipped'])
+  // 上线前置检查的「执行」语义走 test_cases 的三类 kind；单点定义，供清单聚合与 runReleaseChecks 派单共用，
+  // 避免「清单只看 release_items、检查用例被忽略」这类两处口径分叉。
+  const RELEASE_CHECK_CASE_KINDS = new Set(['code_check', 'biz_check', 'release_check'])
 
   function releaseItemVO(r) {
     return {
@@ -1930,6 +2029,11 @@ export function createStore(db, options = {}) {
   /**
    * 上线检查（release readiness）：按节点（self / subtree）汇总上线清单的完成度。
    * 与验收报告同口径——只统计必做项（required）为阻塞项，可选项单列；空清单时 ready=null。
+   *
+   * 就绪 ≠ 只是 release_items 都 done：登记在册却从未执行 / 最近一次失败的
+   * code_check / biz_check / release_check 用例，同样不能带上线（否则会出现
+   * 「必做项全 done、代码检查没跑」的假绿灯）。因此就绪 = 必做项全部 done/skipped
+   * **且**所有启用中的检查用例最近一次结论为 pass；两类阻塞项分列 blockers / caseBlockers。
    */
   function buildReleaseChecklist(nodeId, { scope = 'self' } = {}) {
     const root = rawNode(nodeId)
@@ -1945,8 +2049,35 @@ export function createStore(db, options = {}) {
     const pending = items.filter((i) => i.status === 'pending' || i.status === 'ready')
     const blocked = items.filter((i) => i.status === 'blocked')
     const pendingRequired = requiredItems.filter((i) => i.status !== 'done' && i.status !== 'skipped')
+
+    // 检查用例（code/biz/release_check）：只取启用中用例的**最近一次**报告作为证据，
+    // 避免历史 pass 掩盖后来的 fail。running / not_run 都不是可交付证据（与 acceptance 同源口径）。
+    const checkCases = db
+      .prepare(`SELECT * FROM test_cases WHERE node_id IN (${ph}) AND enabled = 1 ORDER BY node_id, sort, id`)
+      .all(...ids)
+      .map(testCaseVO)
+      .filter((c) => RELEASE_CHECK_CASE_KINDS.has(c.kind))
+    const cases = checkCases.map((c) => {
+      const latest = db
+        .prepare('SELECT * FROM test_reports WHERE case_id = ? ORDER BY id DESC LIMIT 1')
+        .get(c.id)
+      const latestStatus = latest ? latest.status : 'not_run'
+      return {
+        caseId: c.id,
+        nodeId: c.nodeId,
+        name: c.name,
+        kind: c.kind,
+        latestStatus,
+        latestReportId: latest ? latest.id : null
+      }
+    })
+    const blockingCases = cases.filter((c) => c.latestStatus !== 'pass')
     const byKind = {}
     for (const i of items) byKind[i.kind] = (byKind[i.kind] || 0) + 1
+    const byCaseKind = {}
+    for (const c of cases) byCaseKind[c.kind] = (byCaseKind[c.kind] || 0) + 1
+    // 空态收紧为「既无必做项、也无检查用例」：有用例却全没跑，不能报 null（那会被当成不适用而不阻塞）。
+    const hasEvidenceScope = requiredItems.length > 0 || cases.length > 0
     return {
       node: { id: root.id, name: root.name, type: root.type },
       scope: effectiveScope,
@@ -1959,10 +2090,15 @@ export function createStore(db, options = {}) {
         // 只报 done 会让「必做项都是 skipped」显示成「已完成：0」，看起来像没做完。
         skipped: items.filter((i) => i.status === 'skipped').length,
         blocked: blocked.length,
-        pending: pending.length
+        pending: pending.length,
+        checkCases: cases.length,
+        checkPass: cases.filter((c) => c.latestStatus === 'pass').length,
+        checkPending: cases.filter((c) => c.latestStatus === 'not_run').length,
+        checkRunning: cases.filter((c) => c.latestStatus === 'running').length
       },
       byKind,
-      ready: requiredItems.length === 0 ? null : pendingRequired.length === 0,
+      byCaseKind,
+      ready: !hasEvidenceScope ? null : pendingRequired.length === 0 && blockingCases.length === 0,
       blockers: pendingRequired.map((i) => ({
         id: i.id,
         nodeId: i.nodeId,
@@ -1970,6 +2106,15 @@ export function createStore(db, options = {}) {
         kind: i.kind,
         status: i.status
       })),
+      caseBlockers: blockingCases.map((c) => ({
+        caseId: c.caseId,
+        nodeId: c.nodeId,
+        name: c.name,
+        kind: c.kind,
+        latestStatus: c.latestStatus,
+        latestReportId: c.latestReportId
+      })),
+      checkCases: cases,
       items
     }
   }
@@ -2052,10 +2197,15 @@ export function createStore(db, options = {}) {
       applicable: release.ready != null,
       detail:
         release.ready == null
-          ? '当前范围没有必做上线项'
+          ? '当前范围没有必做上线项 / 上线检查用例'
           : release.ready
-            ? `${release.totals.required} 个必做上线项已完成或跳过`
-            : `${release.blockers.length} 个必做上线项仍待处理或阻塞`,
+            ? `${release.totals.required} 个必做上线项已完成或跳过${release.totals.checkCases ? `，${release.totals.checkPass}/${release.totals.checkCases} 条检查用例通过` : ''}`
+            : [
+                release.blockers.length ? `${release.blockers.length} 个必做上线项仍待处理或阻塞` : null,
+                release.caseBlockers.length ? `${release.caseBlockers.length} 条上线检查用例未通过` : null
+              ]
+                .filter(Boolean)
+                .join('，'),
       evidence: release
     })
 
@@ -2078,6 +2228,15 @@ export function createStore(db, options = {}) {
       } else if (source.key === 'release' && source.evidence) {
         for (const b of source.evidence.blockers) {
           blockers.push({ source: source.key, label: source.label, name: b.name, detail: `上线项状态：${b.status}` })
+        }
+        // 检查用例（code/biz/release_check）也是上线就绪的证据，未 pass 时必须一并阻塞。
+        for (const c of source.evidence.caseBlockers || []) {
+          blockers.push({
+            source: source.key,
+            label: source.label,
+            name: c.name,
+            detail: `上线检查用例最近结果：${c.latestStatus}`
+          })
         }
       }
     }
@@ -2923,6 +3082,7 @@ export function createStore(db, options = {}) {
     finishTestReport,
     finalizeReportsForRun,
     buildAcceptanceReport,
+    buildAcceptanceConclusion,
     // 需求就绪门禁（需求管理闭环的前置判定）
     SCOPE_VALUES,
     normalizeScope,
@@ -2931,6 +3091,7 @@ export function createStore(db, options = {}) {
     buildRequirementReadiness,
     // 上线治理（上线配置 / 上线 SQL / 上线检查清单）
     RELEASE_ITEM_KINDS,
+    RELEASE_CHECK_CASE_KINDS,
     createReleaseItem,
     listReleaseItems,
     getReleaseItem,

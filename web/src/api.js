@@ -91,6 +91,26 @@ export default {
   testReportGet: (reportId) => api(`/test-reports/${reportId}`),
   testReportFinish: (reportId, data) => api(`/test-reports/${reportId}`, { method: 'PATCH', body: JSON.stringify(data) }),
   acceptanceReport: (nodeId, { scope } = {}) => api(`/nodes/${nodeId}/acceptance-report${scope ? `?scope=${scope}` : ''}`),
+  acceptanceConclusion: (nodeId, { scope, version } = {}) => {
+    const qs = new URLSearchParams()
+    if (scope) qs.set('scope', scope)
+    if (version) qs.set('version', version)
+    return api(`/nodes/${nodeId}/acceptance-conclusion${qs.toString() ? `?${qs}` : ''}`)
+  },
+
+  // 上线治理（上线配置 / 上线 SQL / 上线检查清单）
+  releaseItemList: (nodeId, { kind, status, includeOptional } = {}) => {
+    const qs = new URLSearchParams()
+    if (kind) qs.set('kind', kind)
+    if (status) qs.set('status', status)
+    if (includeOptional === false) qs.set('includeOptional', 'false')
+    return api(`/nodes/${nodeId}/release-items${qs.toString() ? `?${qs}` : ''}`)
+  },
+  releaseItemUpsert: (nodeId, data) => api(`/nodes/${nodeId}/release-items/upsert`, { method: 'POST', body: JSON.stringify(data) }),
+  releaseItemUpdate: (id, data) => api(`/release-items/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  releaseItemRemove: (id) => api(`/release-items/${id}`, { method: 'DELETE' }),
+  releaseChecklist: (nodeId, { scope } = {}) => api(`/nodes/${nodeId}/release-checklist${scope ? `?scope=${scope}` : ''}`),
+  releaseCheck: (nodeId, data) => api(`/nodes/${nodeId}/release-checks`, { method: 'POST', body: JSON.stringify(data) }),
 
   // 交付门禁
   deliveryGate: (nodeId, scope) => api(`/nodes/${nodeId}/delivery-gate?scope=${scope || 'self'}`),

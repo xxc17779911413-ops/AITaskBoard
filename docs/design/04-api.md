@@ -75,6 +75,7 @@
 | GET | `/api/test-reports/:rid` | 单条报告详情 |
 | PATCH | `/api/test-reports/:rid` | 回写报告 `{status, summary?, detail?, runId?, overwrite?}`；`running → 终态` 单向，终态同状态幂等；终态互转默认拒绝 `REPORT_STATUS_IMMUTABLE`（409），`overwrite:true` 才覆盖；**自动收尾（`autoFinalized=true`）的终态可无需 `overwrite` 直接改正**；非法 `status` → 400 `VALIDATION_FAILED` |
 | GET | `/api/nodes/:id/acceptance-report` | 验收报告聚合：`?scope=self\|subtree`，`?format=json\|md`（md 直接贴 issue/MR）。分桶总数守恒（`pass+fail+blocked+error+cancelled+running+notRun=cases`）；`running`/`notRun` 不计入通过率分母 |
+| GET | `/api/nodes/:id/acceptance-conclusion` | 验收结论（按需求 / 版本）：合并逐需求测试结论与文档缺口，返回逐需求 `pass`/`fail`/`not_applicable` 与整体 `decision`（`accepted`/`rejected`/`unknown`）；`?scope=self\|subtree`、`?version=<版本属性>`、`?format=json\|md`；空态 `ready=null`；纯读 |
 
 ### 需求就绪门禁（需求管理闭环的前置判定）
 
@@ -102,7 +103,7 @@
 | POST | `/api/nodes/:id/release-items/reorder` | `{orderedIds[]}` 重排上线项 |
 | PATCH | `/api/release-items/:rid` | 更新上线项 `{name?, kind?, content?, rollback?, status?, required?}` |
 | DELETE | `/api/release-items/:rid` | 删除上线项 |
-| GET | `/api/nodes/:id/release-checklist` | 上线检查清单：`?scope=self\|subtree`，`?format=json\|md`（md 直接贴上线单）|
+| GET | `/api/nodes/:id/release-checklist` | 上线检查清单：`?scope=self\|subtree`，`?format=json\|md`（md 直接贴上线单）。就绪 = 必做上线项全部 `done`/`skipped` **且** 全部启用中的 `code_check`/`biz_check`/`release_check` 用例最近一次为 `pass`；两类阻塞分列 `blockers`/`caseBlockers`；空态（既无必做项也无检查用例）`ready=null` |
 | POST | `/api/nodes/:id/release-checks` | 派单上线前置检查：`{caseIds?, scope?, prompt?, agent?, model?, cwd?, dryRun?}`；按 scope（`self`/`subtree`）挑 `code_check`/`biz_check`/`release_check` 用例，为每条开 `running` 报告（dryRun 只回清单与提示词） |
 
 ### agent 运行时 / 会话 / 任务

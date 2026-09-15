@@ -48,6 +48,7 @@ export const TOOLS = [
   'test_report_get',
   'test_report_finish',
   'acceptance_report',
+  'acceptance_conclusion',
   'requirement_readiness',
   'delivery_gate',
   'release_item_list',
@@ -957,6 +958,43 @@ export function renderReadinessMd(readiness) {
  * 交付门禁导出：把三段既有结论收敛成一张可贴进 issue / 上线单的最终判定。
  * 与 renderReadinessMd / renderAcceptanceMd / renderReleaseChecklistMd 同风格。
  */
+/**
+ * 验收结论导出：把按需求/版本的验收结论渲染成可贴进 issue 的 markdown。
+ * 与 renderAcceptanceMd / renderDeliveryGateMd 同风格。
+ */
+export function renderAcceptanceConclusionMd(conclusion) {
+  const cell = (v) =>
+    String(v == null ? '' : v)
+      .replace(/\\/g, '\\\\')
+      .replace(/\|/g, '\\|')
+      .replace(/\r?\n/g, ' ')
+  const t = conclusion.totals
+  const decisionLabels = { accepted: '验收通过', rejected: '验收未通过', unknown: '—（没有可判定的需求）' }
+  const lines = [
+    `# 验收结论：${conclusion.node.name}`,
+    '',
+    `- 范围：${conclusion.scope === 'subtree' ? '含子树' : '仅本节点'}${conclusion.version ? ` · 版本：${conclusion.version}` : ''}`,
+    `- 需求：${t.units} · 通过：${t.pass} · 未通过：${t.fail} · 不适用：${t.notApplicable}`,
+    `- 测试用例：${t.cases} · 通过：${t.testPass} · 未通过：${t.testFail}`,
+    `- 验收结论：${decisionLabels[conclusion.decision] || conclusion.decision}`,
+    ''
+  ]
+  if (conclusion.blockers.length > 0) {
+    lines.push('## 阻塞项', '', '| 需求 | 来源 | 阻塞项 | 说明 |', '|---|---|---|---|')
+    for (const b of conclusion.blockers) {
+      lines.push(`| ${cell(b.name)} | ${cell(b.source === 'document' ? '文档' : '测试')} | ${cell(b.label)} | ${cell(b.detail)} |`)
+    }
+    lines.push('')
+  }
+  lines.push('## 需求明细', '', '| 需求 | 版本 | 结论 | 用例 | 文档缺口 |', '|---|---|---|---|---|')
+  for (const i of conclusion.items) {
+    lines.push(
+      `| ${cell(i.name)} | ${cell(i.version || '—')} | ${cell(i.decision)} | ${i.caseCount} | ${i.docBlockers.length ? cell(i.docBlockers.map((d) => d.label).join('、')) : '—'} |`
+    )
+  }
+  return lines.join('\n')
+}
+
 export function renderDeliveryGateMd(gate) {
   // 用例名 / 阻塞项可能来自 AI 或用户输入；进入 markdown 表格前必须转义，
   // 否则 `|` 会多分一列、换行会直接截断表格。
@@ -1006,12 +1044,18 @@ export function renderReleaseChecklistMd(checklist) {
     '',
     `- 范围：${checklist.scope === 'subtree' ? '含子树' : '仅本节点'}`,
     `- 上线项：${t.items} · 必做：${t.required} · 可选：${t.optional} · 完成：${t.done} · 跳过：${t.skipped} · 阻塞：${t.blocked} · 待处理：${t.pending}`,
-    `- 上线就绪：${checklist.ready == null ? '—（无必做项）' : checklist.ready ? '是' : '否'}`,
+    `- 检查用例：${t.checkCases ?? 0} · 通过：${t.checkPass ?? 0} · 未执行：${t.checkPending ?? 0} · 执行中：${t.checkRunning ?? 0}`,
+    `- 上线就绪：${checklist.ready == null ? '—（既无必做项也无检查用例）' : checklist.ready ? '是' : '否'}`,
     ''
   ]
   if (checklist.blockers.length > 0) {
     lines.push('## 阻塞项', '', '| 上线项 | 类型 | 状态 |', '|---|---|---|')
     for (const b of checklist.blockers) lines.push(`| ${b.name} | ${kindLabels[b.kind] || b.kind} | ${b.status} |`)
+    lines.push('')
+  }
+  if ((checklist.caseBlockers || []).length > 0) {
+    lines.push('## 检查用例阻塞项', '', '| 检查用例 | 类型 | 最近结果 |', '|---|---|---|')
+    for (const c of checklist.caseBlockers) lines.push(`| ${c.name} | ${c.kind} | ${c.latestStatus} |`)
     lines.push('')
   }
   lines.push('## 上线项明细', '', '| 上线项 | 类型 | 状态 | 必做 | 回滚 |', '|---|---|---|---|---|')
@@ -1041,7 +1085,8 @@ export function runReleaseChecks(
   const checkNodeIds = effectiveScope === 'subtree' ? store.subtreeIds(node.id) : [node.id]
   const checks = checkNodeIds
     .flatMap((nid) => store.listTestCases(nid, {}))
-    .filter((c) => c.kind === 'code_check' || c.kind === 'biz_check' || c.kind === 'release_check')
+    // 与 buildReleaseChecklist 共用同一份值域，避免「清单纳入」与「派单纳入」两处口径分叉。
+    .filter((c) => store.RELEASE_CHECK_CASE_KINDS.has(c.kind))
     .filter((c) => (caseIds && caseIds.length ? caseIds.map(Number).includes(c.id) : true))
   const checklist = store.buildReleaseChecklist(node.id, { scope: effectiveScope })
   if (checks.length === 0 && checklist.items.length === 0) {

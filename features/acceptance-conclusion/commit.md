@@ -1,0 +1,4 @@
+# 提交记录：验收结论（按需求 / 版本）
+
+- feat(acceptance-conclusion): 验收结论纵向切片——`buildAcceptanceConclusion` 复用 acceptance-report 与 readiness，按需求/版本给出逐条结论（pass/fail/not_applicable）与整体 decision（accepted/rejected/unknown，空态 ready=null）；合并测试阻塞与文档缺口到统一 blockers；三入口 1:1（HTTP `/api/nodes/:id/acceptance-conclusion`、CLI `acceptance conclusion`、MCP `acceptance_conclusion`）+ renderAcceptanceConclusionMd；RegressionPane 增验收结论区块与 Web API；补 store/入口/展示口径回归
+- fix(release-governance): 上线检查清单纳入 `code_check`/`biz_check`/`release_check` 检查用例（堵住「必做项全 done 即就绪」假绿灯）——就绪 = 必做项全部 done/skipped 且所有启用中检查用例最近一次 pass；`running`/`not_run` 均不算通过；历史 pass 不掩盖后来的 fail；停用用例不阻塞；空态收紧为「既无必做项也无检查用例」；阻塞分列 `blockers`/`caseBlockers` 并补 `totals.check*` 与 `byCaseKind`；delivery-gate 的 release 来源同步纳入检查用例；新增 `web/src/release.js` + `ReleasePane.vue`「上线就绪」页签（上线项 CRUD/状态、检查用例、阻塞项、派单预演）
