@@ -22,6 +22,11 @@
 `version` 参数过滤在聚合之后按属性值匹配；过滤后没有需求时整体回到 `unknown`（`ready=null`），
 不要把「这个版本还没建需求」显示成「验收未通过」。
 
+**R3.1 过滤后 KPI 必须同源**：`totals.cases` / `testPass` / `testFail` 由**过滤后的 `items`** 重算
+（`cases = Σ item.caseCount`，`testPass = Σ item.latestStatuses 中 pass 数`，`testFail = cases - testPass`），
+**不能**直接引用全范围的 `acceptance.totals`——那个聚合没有 version 维度，会让「按版本过滤」后
+Web 摘要与 markdown 导出显示比明细更大的用例数，与 `items` / `decision` 自相矛盾。
+
 **R4 空态**：`applicable = pass + fail`；`applicable === 0` 时 `decision=unknown`、`ready=null`。
 
 **R5 阻塞项**：展平为 `{ nodeId, name, source: 'test'|'document', label, detail }`，

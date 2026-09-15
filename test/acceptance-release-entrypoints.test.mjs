@@ -113,3 +113,85 @@ test('验收结论 + 上线清单：CLI 与 MCP 与 store 逐字段一致（含�
   assert.equal(mcpChecklist.isError, undefined)
   assert.deepEqual(JSON.parse(mcpChecklist.content[0].text), viaStoreChecklist)
 })
+
+test('验收结论：按版本过滤后 KPI 等于明细求和，store / HTTP / CLI / MCP 一致', async (t) => {
+  const tmp = await tempHome()
+  const home = tmp.dir
+  const store = tmp.store.createStore(tmp.openDb())
+  const p = store.createNode({ type: 'project', name: 'P' })
+  const r = store.createNode({ parentId: p.id, type: 'requirement', name: 'RQ3' })
+  const s = store.createNode({ parentId: p.id, type: 'requirement', name: 'RQ4' })
+  store.addAttrDef({ nodeType: 'requirement', key: 'version', label: '版本', dataType: 'text' })
+  // 26Q3：1 pass；26Q4：1 pass + 1 fail
+  const rc = seedAcceptance(store, r.id)
+  const sc = seedAcceptance(store, s.id)
+  const scFail = store.createTestCase(s.id, { name: '回归用例2', prompt: '再跑一次' })
+  const failRep = store.createTestReport(s.id, { caseId: scFail.id, kind: 'regression', status: 'running' })
+  store.finishTestReport(failRep.id, { status: 'fail', summary: '断言失败' })
+  store.setAttrs(r.id, { version: '26Q3' })
+  store.setAttrs(s.id, { version: '26Q4' })
+  void rc
+  void sc
+
+  const viaStore = store.buildAcceptanceConclusion(p.id, { scope: 'subtree', version: '26Q3' })
+  assert.equal(viaStore.totals.cases, 1)
+  assert.equal(viaStore.totals.testPass, 1)
+  assert.equal(viaStore.totals.testFail, 0)
+
+  const { createApp } = await import('../server/http.mjs')
+  const app = createApp({ store })
+  const server = await new Promise((resolve, reject) => {
+    const srv = app.listen(0, '127.0.0.1', () => resolve(srv))
+    srv.once('error', reject)
+  })
+  const base = `http://127.0.0.1:${server.address().port}`
+
+  t.after(async () => {
+    await new Promise((res) => server.close(res))
+    tmp.cleanup()
+  })
+
+  const viaHttp = await fetch(`${base}/api/nodes/${p.id}/acceptance-conclusion?scope=subtree&version=26Q3`).then((x) => x.json())
+  assert.deepEqual(viaHttp, viaStore)
+  // 与明细自洽：KPI == 逐需求求和
+  assert.equal(viaHttp.totals.cases, viaHttp.items.reduce((a, i) => a + i.caseCount, 0))
+  assert.equal(
+    viaHttp.totals.testPass,
+    viaHttp.items.reduce((a, i) => a + i.latestStatuses.filter((x) => x.status === 'pass').length, 0)
+  )
+
+  // markdown 导出也必须展示过滤后的数字（1 条用例、1 通过、0 未通过）
+  const md = await fetch(`${base}/api/nodes/${p.id}/acceptance-conclusion?scope=subtree&version=26Q3&format=md`).then((x) => x.text())
+  assert.ok(md.includes('测试用例：1 · 通过：1 · 未通过：0'))
+
+  // CLI 真实子进程
+  const cliOut = JSON.parse(
+    (
+      await execFileP('node', [CLI, 'acceptance', 'conclusion', String(p.id), '--scope', 'subtree', '--version', '26Q3'], {
+        env: { ...process.env, TASKBOARD_HOME: home },
+        encoding: 'utf8'
+      })
+    ).stdout
+  )
+  assert.deepEqual(cliOut, viaStore)
+
+  // MCP 真实协议
+  const { createMcpServer } = await import('../server/mcp.mjs')
+  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
+  const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js')
+  const mcpServer = createMcpServer({ store })
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+  await mcpServer.connect(serverTransport)
+  const client = new Client({ name: 'taskboard-version-kpi-test', version: '1.0.0' })
+  await client.connect(clientTransport)
+  t.after(async () => {
+    await client.close()
+    await mcpServer.close()
+  })
+  const mcpOut = await client.callTool({
+    name: 'acceptance_conclusion',
+    arguments: { node: p.id, scope: 'subtree', version: '26Q3' }
+  })
+  assert.equal(mcpOut.isError, undefined)
+  assert.deepEqual(JSON.parse(mcpOut.content[0].text), viaStore)
+})

@@ -1812,6 +1812,11 @@ export function createStore(db, options = {}) {
     const pass = count('pass')
     const fail = count('fail')
     const notApplicable = count('not_applicable')
+    // 用例 KPI 必须由**过滤后的 items** 重算：acceptance.totals 是全范围（不含 version 维度）的，
+    // 直接引用会让「按版本过滤后」的摘要 / markdown 导出与逐需求明细自相矛盾（Web 与导出同时错）。
+    const cases = items.reduce((sum, i) => sum + i.caseCount, 0)
+    const testPass = items.reduce((sum, i) => sum + i.latestStatuses.filter((s) => s.status === 'pass').length, 0)
+    const testFail = cases - testPass
     const blockers = items.flatMap((i) => [
       ...i.caseBlockers.map((c) => ({ nodeId: i.nodeId, name: i.name, source: 'test', label: c.name, detail: `最近结果：${c.latestStatus}` })),
       ...i.docBlockers.map((c) => ({ nodeId: i.nodeId, name: i.name, source: 'document', label: c.label, detail: c.detail }))
@@ -1829,9 +1834,9 @@ export function createStore(db, options = {}) {
         pass,
         fail,
         notApplicable,
-        cases: acceptance.totals.cases,
-        testPass: acceptance.totals.pass,
-        testFail: acceptance.totals.fail,
+        cases,
+        testPass,
+        testFail,
         blockers: blockers.length
       },
       items,

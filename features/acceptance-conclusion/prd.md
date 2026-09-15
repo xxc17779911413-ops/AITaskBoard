@@ -30,6 +30,7 @@
 ## 4. 验收标准
 
 - `test/acceptance-conclusion.test.mjs`：空态 `unknown`；文档就绪但测试未跑 → `fail`（原因测试）；测试通过但缺概要设计 → `fail`（原因文档）；两者齐 → `accepted`；按版本过滤与过滤后空态；`scope` 联动；纯读不产生 revision；非法 `scope` 拒绝。
-- `test/acceptance-release-entrypoints.test.mjs`：store / HTTP / CLI / MCP 逐字段一致；`format=md` 可导出；非法 `scope` HTTP 400。
+- 按版本过滤后 KPI 自洽：`totals.cases` / `testPass` / `testFail` 等于过滤后 `items` 的逐需求求和（不再取全范围 `acceptance.totals`）。
+- `test/acceptance-release-entrypoints.test.mjs`：store / HTTP / CLI / MCP 逐字段一致；`format=md` 可导出；非法 `scope` HTTP 400；按版本过滤后 KPI 等于明细求和且三入口一致、markdown 展示过滤后数字。
 - `test/release-view.test.mjs`：上线就绪展示口径（就绪标签、KPI、阻塞项计数）。
 - `npm test` 全绿；三入口 1:1；文档同步更新（本目录 + `docs/design/04-api.md` + `docs/design/06-ui.md` + `features/README.md`）。

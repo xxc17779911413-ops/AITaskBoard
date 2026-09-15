@@ -126,3 +126,52 @@ test('acceptance_conclusion：非法 scope 拒绝（不静默降级）', async (
   t.after(() => tmp.cleanup())
   assert.throws(() => store.buildAcceptanceConclusion(r.id, { scope: 'sub' }), /VALIDATION_FAILED/)
 })
+
+test('acceptance_conclusion：按版本过滤后 KPI 由过滤后的明细重算（不取全范围）', async (t) => {
+  const { tmp, store, p, r, s } = await setup()
+  t.after(() => tmp.cleanup())
+  store.addAttrDef({ nodeType: 'requirement', key: 'version', label: '版本', dataType: 'text' })
+  store.addAttrDef({ nodeType: 'subreq', key: 'version', label: '版本', dataType: 'text' })
+  // 26Q3：文档齐 + 一条 pass（应验收通过，1 条用例）
+  const rc = makeDocsReady(store, r.id)
+  passReport(store, r.id, rc.id)
+  // 26Q4：文档齐 + 一条 pass 一条 fail（2 条用例，1 过 1 未过）
+  const sc = makeDocsReady(store, s.id)
+  passReport(store, s.id, sc.id)
+  const scFailCases = store.createTestCase(s.id, { name: '回归用例2', prompt: '再跑一次' })
+  const failRep = store.createTestReport(s.id, { caseId: scFailCases.id, kind: 'regression', status: 'running' })
+  store.finishTestReport(failRep.id, { status: 'fail', summary: '断言失败' })
+  store.setAttrs(r.id, { version: '26Q3' })
+  store.setAttrs(s.id, { version: '26Q4' })
+
+  // 全范围：3 条用例、2 pass / 1 fail
+  const all = store.buildAcceptanceConclusion(p.id, { scope: 'subtree' })
+  assert.equal(all.totals.cases, 3)
+  assert.equal(all.totals.testPass, 2)
+  assert.equal(all.totals.testFail, 1)
+
+  // 26Q3：只含 R 的 1 条用例 —— 原缺陷会错报 cases=3 / testPass=2 / testFail=1
+  const v3 = store.buildAcceptanceConclusion(p.id, { scope: 'subtree', version: '26Q3' })
+  assert.equal(v3.totals.units, 1)
+  assert.equal(v3.totals.cases, 1)
+  assert.equal(v3.totals.testPass, 1)
+  assert.equal(v3.totals.testFail, 0)
+  assert.equal(v3.decision, 'accepted')
+
+  // 26Q4：只含 S 的 2 条用例（1 pass / 1 fail）
+  const v4 = store.buildAcceptanceConclusion(p.id, { scope: 'subtree', version: '26Q4' })
+  assert.equal(v4.totals.units, 1)
+  assert.equal(v4.totals.cases, 2)
+  assert.equal(v4.totals.testPass, 1)
+  assert.equal(v4.totals.testFail, 1)
+  assert.equal(v4.decision, 'rejected')
+
+  // 不变量：KPI 恒等于逐需求明细之和
+  for (const out of [all, v3, v4]) {
+    const sumCases = out.items.reduce((a, i) => a + i.caseCount, 0)
+    const sumPass = out.items.reduce((a, i) => a + i.latestStatuses.filter((x) => x.status === 'pass').length, 0)
+    assert.equal(out.totals.cases, sumCases)
+    assert.equal(out.totals.testPass, sumPass)
+    assert.equal(out.totals.testFail, out.totals.cases - out.totals.testPass)
+  }
+})
