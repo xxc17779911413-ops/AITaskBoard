@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { openDb } from './db.mjs'
 import { createStore } from './store.mjs'
 import { loadConfig, saveConfig, maskToken } from './config.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceConclusionMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderDeliveryGateMd } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceConclusionMd, renderStructureGraphMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderDeliveryGateMd } from './ops.mjs'
 import { startAgentRun, retryAndDispatch } from './agent.mjs'
 import { resolveRepoDir, pickBranchForCommit } from './git.mjs'
 
@@ -823,6 +823,28 @@ export function createMcpServer({ store }) {
       const conclusion = store.buildAcceptanceConclusion(n.id, { scope, version: version || null })
       const text =
         store.normalizeFormat(format) === 'md' ? renderAcceptanceConclusionMd(conclusion) : JSON.stringify(conclusion, null, 2)
+      return { content: [{ type: 'text', text }] }
+    })
+  )
+
+  server.tool(
+    'structure_graph',
+    '结构探索图谱：需求树 + 每节点的文档缺口 / 用例最近结论 / 需求就绪状态，只读；支持 type/status/ready/hasGap/caseStatus/q 基础筛选，format=md 返回可贴进 issue 的 markdown',
+    {
+      node: z.union([z.number(), z.string()]),
+      scope: z.string().optional(),
+      type: z.string().optional(),
+      status: z.string().optional(),
+      ready: z.union([z.boolean(), z.string()]).optional(),
+      hasGap: z.union([z.boolean(), z.string()]).optional(),
+      caseStatus: z.string().optional(),
+      q: z.string().optional(),
+      format: z.string().optional()
+    },
+    mcpValidate(async ({ node, scope, type, status, ready, hasGap, caseStatus, q, format }) => {
+      const n = store.resolveRef(String(node))
+      const graph = store.buildStructureGraph(n.id, { scope, type, status, ready, hasGap, caseStatus, q })
+      const text = store.normalizeFormat(format) === 'md' ? renderStructureGraphMd(graph) : JSON.stringify(graph, null, 2)
       return { content: [{ type: 'text', text }] }
     })
   )

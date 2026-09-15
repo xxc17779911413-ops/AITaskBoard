@@ -240,6 +240,23 @@ curl -s 'http://127.0.0.1:3210/api/documents/overview?projectId=1&docName=概要
 > HTTP / CLI / MCP 三入口同口径，不再抛 `NOT_FOUND` / `PATH_NOT_FOUND`。
 > 叠加 `q` / `docName` / `fill` 筛选后，顶部 KPI 取 `filteredDocumentCount` / `filteredGapCount`，与列表一致。
 
+## 结构探索（需求树 + 文档/用例/验收状态）
+
+```bash
+# 需求树叠加「文档缺口 / 用例最近结论 / 需求就绪」状态；可按类型 / 状态 / 就绪 / 缺口 / 用例状态 / 关键词筛选
+curl -s 'http://127.0.0.1:3210/api/nodes/1/structure-graph?scope=subtree'
+curl -s 'http://127.0.0.1:3210/api/nodes/1/structure-graph?scope=subtree&hasGap=true'
+curl -s 'http://127.0.0.1:3210/api/nodes/1/structure-graph?scope=subtree&caseStatus=not_run&format=md'
+
+# CLI / MCP 等价入口
+# node bin/taskboard.js structure graph "项目A" --scope subtree [--type requirement] [--status doing] [--ready false] [--has-gap true] [--case-status not_run] [--q 导出]
+# MCP: structure_graph { node, scope?, type?, status?, ready?, hasGap?, caseStatus?, q?, format? }
+```
+
+> 只读投影：不写库、不动 revision。`caseStatus` 按最严重优先（`fail > running > not_run > pass`）；
+> 筛选只影响展示，`totals.total` 是筛选前节点数、`totals.nodes` 是筛选后，`edges` 只保留两端都在结果集里的连接。
+> `scope` / `type` / `status` / `ready` / `hasGap` / `caseStatus` / `format` 非法值一律 `400 VALIDATION_FAILED`。
+
 ## 幂等写入（AI 首选）
 
 ### 按路径 get-or-create

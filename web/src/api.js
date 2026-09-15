@@ -97,6 +97,17 @@ export default {
     if (version) qs.set('version', version)
     return api(`/nodes/${nodeId}/acceptance-conclusion${qs.toString() ? `?${qs}` : ''}`)
   },
+  structureGraph: (nodeId, { scope, type, status, ready, hasGap, caseStatus, q } = {}) => {
+    const qs = new URLSearchParams()
+    if (scope) qs.set('scope', scope)
+    if (type) qs.set('type', type)
+    if (status) qs.set('status', status)
+    if (ready !== undefined && ready !== null && ready !== '') qs.set('ready', ready)
+    if (hasGap !== undefined && hasGap !== null && hasGap !== '') qs.set('hasGap', hasGap)
+    if (caseStatus) qs.set('caseStatus', caseStatus)
+    if (q) qs.set('q', q)
+    return api(`/nodes/${nodeId}/structure-graph${qs.toString() ? `?${qs}` : ''}`)
+  },
 
   // 上线治理（上线配置 / 上线 SQL / 上线检查清单）
   releaseItemList: (nodeId, { kind, status, includeOptional } = {}) => {

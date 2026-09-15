@@ -1844,6 +1844,166 @@ export function createStore(db, options = {}) {
     }
   }
 
+  // ---------- 结构探索（树 + 文档/用例/验收状态的只读图谱） ----------
+  //
+  // 「思维导图」是节点树的 mermaid 投影；本聚合在其上加一层**状态叠加**：
+  // 每个节点带文档缺口、回归用例数/最近结论、需求就绪与门禁阻塞，让「哪块没写文档 /
+  // 哪块测试没跑 / 哪块没验收」一眼可见。纯读、不落表、不 bump revision。
+
+  /**
+   * 结构探索图谱：`buildStructureGraph(nodeId, { scope, type, status, ready, hasGap, caseStatus, q })`。
+   *
+   * - 只读：复用节点树 + 文档 + 用例 + 需求就绪门禁，不写库、不动 revision。
+   * - 基础筛选（全部可选；非法值一律 VALIDATION_FAILED，不静默降级）：
+   *   - `type` 节点类型（project/requirement/subreq/group/task/defect）；
+   *   - `status` 需求两层状态（复用需求状态值域）；
+   *   - `ready` true/false，按需求门禁是否全过；
+   *   - `hasGap` true/false，按是否存在文档缺口（需求内容 / 概要设计未填）；
+   *   - `caseStatus` pass/fail/not_run/running，按启用中用例最近结论聚合（最严重优先）；
+   *   - `q` 名称 / 路径子串（不区分大小写）。
+   * - 返回 `nodes`（含 depth 与状态字段）、`edges`、`totals`、`filters`（回显）。
+   */
+  function buildStructureGraph(
+    nodeId,
+    { scope = 'self', type = null, status = null, ready = null, hasGap = null, caseStatus = null, q = null } = {}
+  ) {
+    const root = rawNode(nodeId)
+    const effectiveScope = normalizeScope(scope)
+    const typeFilter = type === null || type === undefined || type === '' ? null : String(type)
+    if (typeFilter && !Object.prototype.hasOwnProperty.call(CHILD_TYPES, typeFilter)) {
+      throw new AppError(CODES.VALIDATION_FAILED, `未知节点类型 ${type}`, { type, allowed: Object.keys(CHILD_TYPES) })
+    }
+    const statusFilter = status === null || status === undefined || status === '' ? null : String(status)
+    if (statusFilter) assertRequirementStatus(statusFilter)
+    const parseBool = (v, name) => {
+      if (v === null || v === undefined || v === '') return null
+      if (typeof v === 'boolean') return v
+      const s = String(v).toLowerCase()
+      if (s === 'true') return true
+      if (s === 'false') return false
+      throw new AppError(CODES.VALIDATION_FAILED, `${name} 需要是 true/false`, { [name]: v })
+    }
+    const readyFilter = parseBool(ready, 'ready')
+    const hasGapFilter = parseBool(hasGap, 'hasGap')
+    const caseStatusFilter = caseStatus === null || caseStatus === undefined || caseStatus === '' ? null : String(caseStatus)
+    const CASE_STATUS_VALUES = ['pass', 'fail', 'not_run', 'running']
+    if (caseStatusFilter && !CASE_STATUS_VALUES.includes(caseStatusFilter)) {
+      throw new AppError(CODES.VALIDATION_FAILED, `未知用例状态筛选 ${caseStatus}`, {
+        caseStatus,
+        allowed: CASE_STATUS_VALUES
+      })
+    }
+    const query = q === null || q === undefined ? '' : String(q).trim().toLowerCase()
+
+    const rows = db.prepare('SELECT * FROM nodes ORDER BY sort, id').all()
+    const byParent = new Map()
+    for (const r of rows) {
+      const key = r.parent_id == null ? null : r.parent_id
+      if (!byParent.has(key)) byParent.set(key, [])
+      byParent.get(key).push(r)
+    }
+
+    const expectedNames = requirementDocNames()
+    const decorate = (row, depth) => {
+      const node = nodeVO(row)
+      const docs = listDocuments(node.id)
+      const documentGaps = []
+      if (READINESS_UNIT_TYPES.has(node.type)) {
+        for (const name of expectedNames) {
+          const doc = docs.find((d) => d.name === name)
+          if (!doc || String(doc.content || '').trim() === '') {
+            documentGaps.push({ name, linked: !!doc })
+          }
+        }
+      }
+      const cases = listTestCases(node.id, {})
+      const statuses = cases.map(
+        (c) => db.prepare('SELECT status FROM test_reports WHERE case_id = ? ORDER BY id DESC LIMIT 1').get(c.id)?.status || 'not_run'
+      )
+      const casePass = statuses.filter((s) => s === 'pass').length
+      const caseFail = statuses.filter((s) => ['fail', 'blocked', 'error', 'cancelled'].includes(s)).length
+      const caseRunning = statuses.filter((s) => s === 'running').length
+      const caseNotRun = statuses.filter((s) => s === 'not_run').length
+      // 最严重优先：fail > running > not_run > pass（与门禁「不伪造成通过」同口径）
+      const caseStatus = caseFail ? 'fail' : caseRunning ? 'running' : caseNotRun ? 'not_run' : cases.length ? 'pass' : null
+      const readiness = READINESS_UNIT_TYPES.has(node.type) ? buildRequirementReadiness(node.id, { scope: 'self' }) : null
+      const unit = readiness && readiness.units[0] ? readiness.units[0] : null
+      return {
+        id: node.id,
+        name: node.name,
+        type: node.type,
+        status: node.status,
+        path: node.path,
+        depth,
+        documentCount: docs.length,
+        documentGaps,
+        hasGap: documentGaps.length > 0,
+        caseCount: cases.length,
+        casePass,
+        caseFail,
+        caseRunning,
+        caseNotRun,
+        caseStatus,
+        ready: unit ? unit.ready : null,
+        gateBlockers: unit ? unit.checks.filter((c) => !c.passed).map((c) => ({ key: c.key, label: c.label, detail: c.detail })) : []
+      }
+    }
+
+    const collected = []
+    const edges = []
+    const walk = (row, depth) => {
+      collected.push(decorate(row, depth))
+      if (effectiveScope === 'subtree') {
+        for (const child of byParent.get(row.id) || []) {
+          edges.push({ from: row.id, to: child.id })
+          walk(child, depth + 1)
+        }
+      }
+    }
+    walk(root, 0)
+
+    const matches = (n) => {
+      if (typeFilter && n.type !== typeFilter) return false
+      if (statusFilter && n.status !== statusFilter) return false
+      if (readyFilter !== null && n.ready !== readyFilter) return false
+      if (hasGapFilter !== null && n.hasGap !== hasGapFilter) return false
+      if (caseStatusFilter && n.caseStatus !== caseStatusFilter) return false
+      if (query && !`${n.name} ${n.path}`.toLowerCase().includes(query)) return false
+      return true
+    }
+    const nodes = collected.filter(matches)
+    const keptIds = new Set(nodes.map((n) => n.id))
+    // 筛选只影响展示：边必须两端都被保留，避免出现悬空连接
+    const keptEdges = edges.filter((e) => keptIds.has(e.from) && keptIds.has(e.to))
+    const byType = {}
+    for (const n of nodes) byType[n.type] = (byType[n.type] || 0) + 1
+
+    return {
+      node: { id: root.id, name: root.name, type: root.type },
+      scope: effectiveScope,
+      filters: {
+        type: typeFilter,
+        status: statusFilter,
+        ready: readyFilter,
+        hasGap: hasGapFilter,
+        caseStatus: caseStatusFilter,
+        q: query || null
+      },
+      totals: {
+        nodes: nodes.length,
+        total: collected.length,
+        edges: keptEdges.length,
+        depth: nodes.reduce((m, n) => Math.max(m, n.depth), 0),
+        byType,
+        gapNodes: nodes.filter((n) => n.hasGap).length,
+        notReadyNodes: nodes.filter((n) => n.ready === false).length,
+        caseIssueNodes: nodes.filter((n) => n.caseStatus && n.caseStatus !== 'pass').length
+      },
+      nodes,
+      edges: keptEdges
+    }
+  }
+
   // ---------- 上线治理（上线配置 / 上线 SQL / 上线检查清单） ----------
   //
   // 需求 → 概要设计/文档 → 回归测试（test_cases）→ 上线清单（release_items）。
@@ -3088,6 +3248,7 @@ export function createStore(db, options = {}) {
     finalizeReportsForRun,
     buildAcceptanceReport,
     buildAcceptanceConclusion,
+    buildStructureGraph,
     // 需求就绪门禁（需求管理闭环的前置判定）
     SCOPE_VALUES,
     normalizeScope,

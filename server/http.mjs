@@ -1,6 +1,6 @@
 import express from 'express'
 import { AppError, CODES } from './errors.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, approveAndMerge, getMergeStatus, previewMerges, mergeUpstream, runTestCases, renderAcceptanceMd, renderAcceptanceConclusionMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderDeliveryGateMd } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, approveAndMerge, getMergeStatus, previewMerges, mergeUpstream, runTestCases, renderAcceptanceMd, renderAcceptanceConclusionMd, renderStructureGraphMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderDeliveryGateMd } from './ops.mjs'
 import { startAgentRun, retryAndDispatch } from './agent.mjs'
 import { resolveRepoDir, pickBranchForCommit } from './git.mjs'
 import { loadConfig, saveConfig, maskToken } from './config.mjs'
@@ -614,6 +614,27 @@ export function createApp({ store }) {
         return
       }
       res.json(conclusion)
+    })
+  )
+  // 结构探索（树 + 文档/用例/验收状态）：只读图谱，支持类型/状态/就绪/文档缺口/用例状态/关键词筛选。
+  app.get(
+    '/api/nodes/:id/structure-graph',
+    wrap((req, res) => {
+      const node = store.resolveRef(refOf(req))
+      const graph = store.buildStructureGraph(node.id, {
+        scope: req.query.scope,
+        type: req.query.type || null,
+        status: req.query.status || null,
+        ready: req.query.ready,
+        hasGap: req.query.hasGap,
+        caseStatus: req.query.caseStatus || null,
+        q: req.query.q || null
+      })
+      if (store.normalizeFormat(req.query.format) === 'md') {
+        res.type('text/markdown').send(renderStructureGraphMd(graph))
+        return
+      }
+      res.json(graph)
     })
   )
 

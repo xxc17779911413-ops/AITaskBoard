@@ -49,6 +49,7 @@ export const TOOLS = [
   'test_report_finish',
   'acceptance_report',
   'acceptance_conclusion',
+  'structure_graph',
   'requirement_readiness',
   'delivery_gate',
   'release_item_list',
@@ -990,6 +991,44 @@ export function renderAcceptanceConclusionMd(conclusion) {
   for (const i of conclusion.items) {
     lines.push(
       `| ${cell(i.name)} | ${cell(i.version || '—')} | ${cell(i.decision)} | ${i.caseCount} | ${i.docBlockers.length ? cell(i.docBlockers.map((d) => d.label).join('、')) : '—'} |`
+    )
+  }
+  return lines.join('\n')
+}
+
+/**
+ * 结构探索导出：把「树 + 文档/用例/验收状态」图谱渲染成可贴进 issue 的 markdown。
+ * 与 renderMindmapMd / renderAcceptanceConclusionMd 同风格。
+ */
+export function renderStructureGraphMd(graph) {
+  const t = graph.totals
+  const cell = (v) =>
+    String(v == null ? '' : v)
+      .replace(/\\/g, '\\\\')
+      .replace(/\|/g, '\\|')
+      .replace(/\r?\n/g, ' ')
+  const indent = (n) => '  '.repeat(n.depth)
+  const caseLabel = { pass: '通过', fail: '未通过', running: '执行中', not_run: '未执行' }
+  const lines = [
+    `# 结构探索：${graph.node.name}`,
+    '',
+    `- 范围：${graph.scope === 'subtree' ? '含子树' : '仅本节点'}`,
+    `- 节点：${t.nodes}${t.nodes !== t.total ? ` / ${t.total}` : ''} · 连接：${t.edges} · 深度：${t.depth}`,
+    `- 缺口节点：${t.gapNodes} · 未就绪节点：${t.notReadyNodes} · 用例待处理节点：${t.caseIssueNodes}`,
+    ''
+  ]
+  const activeFilters = Object.entries(graph.filters || {}).filter(([, v]) => v !== null && v !== undefined)
+  if (activeFilters.length > 0) {
+    lines.push(`- 筛选：${activeFilters.map(([k, v]) => `${k}=${v}`).join(' · ')}`, '')
+  }
+  lines.push('## 结构', '', '| 节点 | 类型 | 状态 | 文档 | 用例 | 就绪 |', '|---|---|---|---|---|---|')
+  for (const n of graph.nodes) {
+    const caseText = n.caseCount === 0 ? '—' : `${n.caseCount}（${caseLabel[n.caseStatus] || n.caseStatus}）`
+    const docText = n.type === 'requirement' || n.type === 'subreq' ? (n.hasGap ? `缺 ${n.documentGaps.map((g) => g.name).join('、')}` : '齐') : `${n.documentCount} 篇`
+    lines.push(
+      `| ${indent(n)}${cell(n.name)} | ${cell(n.type)} | ${cell(n.status)} | ${cell(docText)} | ${cell(caseText)} | ${
+        n.ready == null ? '—' : n.ready ? '就绪' : '未就绪'
+      } |`
     )
   }
   return lines.join('\n')

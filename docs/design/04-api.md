@@ -76,6 +76,7 @@
 | PATCH | `/api/test-reports/:rid` | 回写报告 `{status, summary?, detail?, runId?, overwrite?}`；`running → 终态` 单向，终态同状态幂等；终态互转默认拒绝 `REPORT_STATUS_IMMUTABLE`（409），`overwrite:true` 才覆盖；**自动收尾（`autoFinalized=true`）的终态可无需 `overwrite` 直接改正**；非法 `status` → 400 `VALIDATION_FAILED` |
 | GET | `/api/nodes/:id/acceptance-report` | 验收报告聚合：`?scope=self\|subtree`，`?format=json\|md`（md 直接贴 issue/MR）。分桶总数守恒（`pass+fail+blocked+error+cancelled+running+notRun=cases`）；`running`/`notRun` 不计入通过率分母 |
 | GET | `/api/nodes/:id/acceptance-conclusion` | 验收结论（按需求 / 版本）：合并逐需求测试结论与文档缺口，返回逐需求 `pass`/`fail`/`not_applicable` 与整体 `decision`（`accepted`/`rejected`/`unknown`）；`?scope=self\|subtree`、`?version=<版本属性>`、`?format=json\|md`；空态 `ready=null`；纯读 |
+| GET | `/api/nodes/:id/structure-graph` | 结构探索图谱：需求树 + 每节点文档缺口 / 用例最近结论 / 需求就绪状态；`?scope=self\|subtree`、`?type=`、`?status=`、`?ready=true\|false`、`?hasGap=true\|false`、`?caseStatus=pass\|fail\|not_run\|running`、`?q=`、`?format=json\|md`；筛选只影响展示、边两端保留；纯读 |
 
 ### 需求就绪门禁（需求管理闭环的前置判定）
 
