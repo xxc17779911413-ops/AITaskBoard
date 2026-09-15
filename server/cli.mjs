@@ -160,6 +160,7 @@ const HELP = `task-board <命令>
   test acceptance-status <ref> [--scope self|subtree] [--format json|md]   验收签收状态（测试证据 + 业务签收）
   test acceptance-sign <ref> --decision accepted|rejected [--scope self|subtree] [--comment "验收意见"]   签收 / 驳回
   readiness check <ref> [--scope self|subtree] [--format json|md]   需求就绪门禁（需求内容 + 概要设计 + 可回归用例）
+  mindmap <ref> [--scope self|subtree] [--max-depth N] [--format json|md]  思维导图（mermaid mindmap 投影；看整棵子树用 --scope subtree）
   delivery gate <ref> [--scope self|subtree] [--format json|md]     交付门禁（需求就绪 + 测试验收 + 上线治理的最终汇总）
   delivery snapshot <ref> [--scope self|subtree] [--note <备注>]    冻结当前交付证据快照
   delivery snapshots <ref> [--scope self|subtree] [--limit N]       交付快照列表（含当前 / 已偏离核对）
