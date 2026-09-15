@@ -817,7 +817,6 @@ watch(() => props.node?.id, loadDetail, { immediate: true })
   margin-bottom: 8px;
 }
 .design-head {
-.snapshot-actions {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -834,14 +833,23 @@ watch(() => props.node?.id, loadDetail, { immediate: true })
 }
 .design-host.vditor-reset {
   padding: 8px 16px;
+}
+.snapshot-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
 .snapshot-hint {
   color: #909399;
   font-size: 12px;
+}
 .audit-summary {
   margin: 0 0 8px;
   font-size: 12px;
   color: #606266;
 }
+
 /* 让 tab 内容撑满抽屉高度，使 DocPane 里的 Vditor 拿到确定高度（否则渲染高度塌陷） */
 :deep(.el-drawer__body) {
   display: flex;
