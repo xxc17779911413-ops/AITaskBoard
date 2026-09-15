@@ -467,3 +467,31 @@ index：`idx_test_reports_node(node_id, id)`、`idx_test_reports_case(case_id, i
 判定单元只有 `requirement` / `subreq` 两类（项目不承载需求正文，任务组 / 子任务 / 缺陷是拆分产物）；
 `scope=subtree` 在子树里挑出这两类逐单元判定。结论口径：全部单元就绪 → `ready=true`，
 任一未就绪 → `false`，**无待判定需求 → `null`**（不用 `false` 冒充未就绪）。
+
+### 4.17 数据快照的表覆盖（export / import 共用一份清单）
+
+`npm run snapshot:export` / `snapshot:import` 把 `~/.taskboard/data.db` 导成可 diff / 可回放的
+`data/snapshot.json`。**快照必须覆盖全部业务表**：表集合与顺序都从 schema 推导
+（`scripts/snapshot-tables.mjs`，export / import 共用），**新增表自动进快照**，
+不维护任何手工表清单。
+
+| 项 | 口径 |
+|---|---|
+| 表集合 | 业务表 = `sqlite_master` 全部表 − `EXCLUDED_TABLES`（新增表自动纳入）|
+| 导入顺序 | 按 `PRAGMA foreign_key_list` 拓扑排序（被引用表在前）|
+| 外键映射 | 直接读 `PRAGMA foreign_key_list`，统一按旧 id → 新 id 重建 |
+| 有意排除 | `EXCLUDED_TABLES` + 必须写明的理由（目前只有 `meta`：`revision` 单独对齐，其余键打开库时重建）|
+| 快照版本 | `version: 2`，自带 `plan`；导入 v1 老快照时缺表显式告警（列出将被清空的表）|
+| 自引用表 | `nodes.parent_id` / `agent_runs.parent_run_id` 由 `selfReferencing` 标出；导入**分两阶段**——插入时先留空，全部行插完再统一回填（不依赖 id 顺序，见下）|
+
+**自引用列必须「先插入、后回填」**：`nodes.parent_id` / `agent_runs.parent_run_id` 指向本表，
+父行的 id 不保证小于子行——父节点可能后创建（真实库里就有 7 条「子 id < 父 id」的记录）。
+若边插边解析映射（哪怕按 id 升序排序），先插入的子行在映射表里还找不到父 id，
+会把合法外键**静默写成 `NULL`**：行数守恒、`IS NOT NULL` 孤儿检查都发现不了，
+只有逐行关系断言才能测出。因此导入分两阶段：第一阶段插入全部行（自引用列留空），
+第二阶段统一回填。关联 UT：`test/snapshot.test.mjs` 的「子节点 id 小于父节点 id」与
+「父 run 后创建」两条回归用例。
+
+历史缺陷（XPX-151）：清单曾硬编码在两处且停在新库最早的 9 张表，
+新增的 `test_cases` / `test_reports` / `release_items` / `comments` / `agent_*` 等
+静默丢失。详见 `features/foundation/design.md` §5。

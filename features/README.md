@@ -58,7 +58,7 @@
 | 仓库登记 | `tree-table-ui/` | server/store.mjs（repos 部分）+ 抽屉/设置页 |
 | 给 AI 的用法 | `smoke-and-ai-docs/` | `AGENTS.md` |
 | 接口示例 | `smoke-and-ai-docs/` | `docs/api.md` |
-| 数据快照导出/导入 | `foundation/` | `scripts/{export,import}-snapshot.mjs`（`npm run snapshot:export/import`）|
+| 数据快照导出/导入（表集合由 schema 推导，新增表自动纳入） | `foundation/` | `scripts/{export,import}-snapshot.mjs` + `scripts/snapshot-tables.mjs`（`npm run snapshot:export/import`）|
 
 ## 二、需求已定，待实现（计划 4–5）
 

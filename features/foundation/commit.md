@@ -34,3 +34,34 @@
   - 验证：还原到临时空库后 nodes/docunents/attr_values 计数一致、正文 120804 字符一致、父子关系无孤儿
 - fix(foundation): 数据快照纳入 document_versions 并重映射文档外键，孤儿版本丢弃
 - feat(acceptance-signoff): 数据快照纳入 test_cases/test_reports/acceptance_signoffs，并重映射 node_id / case_id（run_id 置空）
+- fix(foundation): 修复数据快照静默丢表——表集合与导入顺序改为从 schema 推导
+  - 缺陷：表清单硬编码在 `export-snapshot.mjs` / `import-snapshot.mjs` 两处且停在新库最早 9 张表，
+    新增的 `test_cases` / `test_reports` / `release_items` / `comments` / `branch_configs` /
+    `agent_*` / `ide_requests` 全部不进快照，且导出与导入都不报错（静默丢数据）
+  - 修法：新增 `scripts/snapshot-tables.mjs` 作为单一来源——业务表 = `sqlite_master` − `EXCLUDED_TABLES`
+    （排除项必须写明理由），**新增表自动进快照**；导入顺序按 `PRAGMA foreign_key_list` 拓扑排序，
+    自引用表（`nodes.parent_id` / `agent_runs.parent_run_id`）按 id 升序插入；
+    外键映射直接读 schema，不再为每张表手写插入逻辑
+    （曾在修复中试过「再手写一份更全的清单」，当天即被并行分支新表撞出漂移，故改为 schema 推导）
+  - 兼容：快照 `version` 升 2 并自带 `plan`；导入 v1 老快照缺表时显式告警（列出将被清空的表），
+    目标库缺表时跳过并告警；`data/snapshot.json` 就地升级到 v2（原有行内容零改动，新增表为空）
+  - 测试：`test/snapshot.test.mjs` 9 条（覆盖口径 / 拓扑顺序 / 端到端往返不丢表 /
+    外键重映射无孤儿 / revision 与正文原值 / 新增表自动纳入 / v1 告警 / 格式校验）；
+    变异验证：改回旧的 9 张硬编码清单会挂 5 条；`npm test` 252 全绿
+  - 文档：`features/foundation/{prd,design}.md`、`docs/design/{02-data-model,08-testing,09-decisions}.md`、
+    `AGENTS.md`、`README.md`、`features/README.md`
+- fix(foundation): 修复快照导入的自引用关系丢失——自引用列改为「先插入、后回填」
+  - 缺陷（独立验收退回）：自引用表按 id 升序插入、边插边解析外键，隐含假设父 id 必然小于子 id。
+    真实库有 7 条「子 id < 父 id」（`98/109/119 → 158`、`130/141/148 → 159`、`153 → 160`），
+    先插入子行时映射表里还没有父 id，`parent_id` 被**静默写成 `NULL`**；
+    行数守恒、`IS NOT NULL` 孤儿检查都发现不了（`NULL` 是合法外键值）
+  - 修法：导入改两阶段——第一阶段按计划插入全部行、自引用列先留空；
+    第二阶段在**同一事务内**统一回填（旧 id → 新 id）。不依赖 id 顺序、不做单表特判，
+    `nodes.parent_id` 与 `agent_runs.parent_run_id` 走同一条 schema 驱动的路径
+  - 测试：新增「子节点 id 小于父节点 id」「父 run 后创建」两条回归用例；
+    对 `nodes.parent_id` / `agent_runs.parent_run_id` 改为**逐行关系断言**
+    （按名称/标题映射比对，不依赖 id），不再只看行数与孤儿数
+  - 变异验证：导入端改回「按 id 升序 + 边插边解析」→ 这 2 条挂；修复后 11/11 全绿；
+    真实库导出 → 空库恢复：167 条非空 `parent_id` 与 3 条 agent_runs 引用逐行零差异（含原 7 条）
+  - `npm test` 254 全绿
+  - 文档：`features/foundation/{prd,design}.md`、`docs/design/{02-data-model,08-testing,09-decisions}.md`

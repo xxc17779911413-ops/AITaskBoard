@@ -1,6 +1,6 @@
 {
   "format": "taskboard-snapshot",
-  "version": 1,
+  "version": 2,
   "exportedAt": "2026-09-11T13:15:14.000Z",
   "source": {
     "dbPath": "/Users/xuchen.xia/.taskboard/data.db",
@@ -16,7 +16,17 @@
     "commits": 0,
     "mrs": 0,
     "merges": 0,
-    "unit_repos": 0
+    "unit_repos": 0,
+    "agent_run_messages": 0,
+    "agent_runs": 0,
+    "agent_runtimes": 0,
+    "agent_sessions": 0,
+    "branch_configs": 0,
+    "comments": 0,
+    "ide_requests": 0,
+    "release_items": 0,
+    "test_cases": 0,
+    "test_reports": 0
   },
   "tables": {
     "attr_defs": [
@@ -3928,6 +3938,240 @@
     "commits": [],
     "mrs": [],
     "merges": [],
-    "unit_repos": []
-  }
+    "unit_repos": [],
+    "agent_run_messages": [],
+    "agent_runs": [],
+    "agent_runtimes": [],
+    "agent_sessions": [],
+    "branch_configs": [],
+    "comments": [],
+    "ide_requests": [],
+    "release_items": [],
+    "test_cases": [],
+    "test_reports": []
+  },
+  "plan": [
+    {
+      "name": "agent_runtimes",
+      "fks": [],
+      "selfReferencing": false
+    },
+    {
+      "name": "nodes",
+      "fks": [
+        {
+          "column": "parent_id",
+          "table": "nodes",
+          "refColumn": "id"
+        }
+      ],
+      "selfReferencing": true
+    },
+    {
+      "name": "agent_sessions",
+      "fks": [
+        {
+          "column": "runtime_id",
+          "table": "agent_runtimes",
+          "refColumn": "id"
+        },
+        {
+          "column": "node_id",
+          "table": "nodes",
+          "refColumn": "id"
+        }
+      ],
+      "selfReferencing": false
+    },
+    {
+      "name": "agent_runs",
+      "fks": [
+        {
+          "column": "parent_run_id",
+          "table": "agent_runs",
+          "refColumn": "id"
+        },
+        {
+          "column": "runtime_id",
+          "table": "agent_runtimes",
+          "refColumn": "id"
+        },
+        {
+          "column": "session_id",
+          "table": "agent_sessions",
+          "refColumn": "id"
+        },
+        {
+          "column": "node_id",
+          "table": "nodes",
+          "refColumn": "id"
+        }
+      ],
+      "selfReferencing": true
+    },
+    {
+      "name": "agent_run_messages",
+      "fks": [
+        {
+          "column": "run_id",
+          "table": "agent_runs",
+          "refColumn": "id"
+        }
+      ],
+      "selfReferencing": false
+    },
+    {
+      "name": "attr_defs",
+      "fks": [],
+      "selfReferencing": false
+    },
+    {
+      "name": "attr_values",
+      "fks": [
+        {
+          "column": "attr_def_id",
+          "table": "attr_defs",
+          "refColumn": "id"
+        },
+        {
+          "column": "node_id",
+          "table": "nodes",
+          "refColumn": "id"
+        }
+      ],
+      "selfReferencing": false
+    },
+    {
+      "name": "branch_configs",
+      "fks": [],
+      "selfReferencing": false
+    },
+    {
+      "name": "comments",
+      "fks": [
+        {
+          "column": "node_id",
+          "table": "nodes",
+          "refColumn": "id"
+        }
+      ],
+      "selfReferencing": false
+    },
+    {
+      "name": "commits",
+      "fks": [
+        {
+          "column": "node_id",
+          "table": "nodes",
+          "refColumn": "id"
+        }
+      ],
+      "selfReferencing": false
+    },
+    {
+      "name": "documents",
+      "fks": [
+        {
+          "column": "node_id",
+          "table": "nodes",
+          "refColumn": "id"
+        }
+      ],
+      "selfReferencing": false
+    },
+    {
+      "name": "ide_requests",
+      "fks": [],
+      "selfReferencing": false
+    },
+    {
+      "name": "merges",
+      "fks": [
+        {
+          "column": "node_id",
+          "table": "nodes",
+          "refColumn": "id"
+        }
+      ],
+      "selfReferencing": false
+    },
+    {
+      "name": "mrs",
+      "fks": [
+        {
+          "column": "node_id",
+          "table": "nodes",
+          "refColumn": "id"
+        }
+      ],
+      "selfReferencing": false
+    },
+    {
+      "name": "release_items",
+      "fks": [
+        {
+          "column": "node_id",
+          "table": "nodes",
+          "refColumn": "id"
+        }
+      ],
+      "selfReferencing": false
+    },
+    {
+      "name": "repos",
+      "fks": [],
+      "selfReferencing": false
+    },
+    {
+      "name": "test_cases",
+      "fks": [
+        {
+          "column": "node_id",
+          "table": "nodes",
+          "refColumn": "id"
+        }
+      ],
+      "selfReferencing": false
+    },
+    {
+      "name": "test_reports",
+      "fks": [
+        {
+          "column": "run_id",
+          "table": "agent_runs",
+          "refColumn": "id"
+        },
+        {
+          "column": "case_id",
+          "table": "test_cases",
+          "refColumn": "id"
+        },
+        {
+          "column": "node_id",
+          "table": "nodes",
+          "refColumn": "id"
+        }
+      ],
+      "selfReferencing": false
+    },
+    {
+      "name": "unit_repos",
+      "fks": [
+        {
+          "column": "repo_id",
+          "table": "repos",
+          "refColumn": "id"
+        },
+        {
+          "column": "node_id",
+          "table": "nodes",
+          "refColumn": "id"
+        }
+      ],
+      "selfReferencing": false
+    }
+  ],
+  "excluded": [
+    "meta"
+  ]
 }

@@ -16,6 +16,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
+import { EXCLUDED_TABLES, assertExclusionsDocumented, importPlan } from './snapshot-tables.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const home = process.env.TASKBOARD_HOME || path.join(os.homedir(), '.taskboard')
@@ -31,22 +32,17 @@ if (!fs.existsSync(dbPath)) {
 const db = new DatabaseSync(dbPath)
 db.exec('PRAGMA foreign_keys = OFF')
 
-/** 导出顺序即导入顺序（外键依赖在前；document_versions 必须紧跟 documents） */
-const TABLE_ORDER = [
-  'attr_defs',
-  'repos',
-  'nodes',
-  'attr_values',
-  'documents',
-  'document_versions',
-  'test_cases',
-  'test_reports',
-  'acceptance_signoffs',
-  'commits',
-  'mrs',
-  'merges',
-  'unit_repos'
-]
+try {
+  assertExclusionsDocumented()
+} catch (e) {
+  console.error(`[export] ${e.message}`)
+  process.exit(1)
+}
+
+// 表集合与顺序都从 schema 推导（见 scripts/snapshot-tables.mjs）：
+// 新增业务表自动进快照，不存在「忘了加进清单」而静默丢数据的可能（历史缺陷 XPX-151）。
+const PLAN = importPlan(db)
+const TABLE_ORDER = PLAN.map((t) => t.name)
 
 const tables = {}
 for (const t of TABLE_ORDER) {
@@ -56,10 +52,14 @@ const revision = Number(db.prepare("SELECT value FROM meta WHERE key = 'revision
 
 const snapshot = {
   format: 'taskboard-snapshot',
-  version: 1,
+  // v2：表集合与顺序由 schema 推导，覆盖全部业务表（v1 只导 9 张，丢失 test_cases / release_items 等）
+  version: 2,
   exportedAt: new Date().toISOString(),
   source: { dbPath, size: fs.statSync(dbPath).size },
   revision,
+  // 记下本次导出的表清单，导入端据此判断「快照缺表」还是「表本来为空」
+  plan: PLAN.map((t) => ({ name: t.name, fks: t.fks, selfReferencing: t.selfReferencing })),
+  excluded: Object.keys(EXCLUDED_TABLES),
   counts: Object.fromEntries(Object.entries(tables).map(([k, v]) => [k, v.length])),
   tables
 }

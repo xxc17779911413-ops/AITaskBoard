@@ -30,8 +30,8 @@ npm start       # 起服务并打开浏览器（默认 http://127.0.0.1:3210）
 | `node bin/taskboard.js tree --format md` | CLI 入口（`npm link` 后可直接 `taskboard`） |
 | `node server/import-dsh.mjs --dry-run` | 预览 dsh-charge 需求同步（不写库） |
 | `node server/import-dsh.mjs --reset` | 重建导入 dsh-charge 需求 |
-| `npm run snapshot:export` | 把 `~/.taskboard/data.db` 导成 `data/snapshot.json`（文本快照，可入 git / 备份）|
-| `npm run snapshot:import` | 从 `data/snapshot.json` 恢复到本地库（幂等，会自动重映射主键）|
+| `npm run snapshot:export` | 把 `~/.taskboard/data.db` 导成 `data/snapshot.json`（文本快照，可入 git / 备份；覆盖全部业务表，漏登记表会直接报错）|
+| `npm run snapshot:import` | 从 `data/snapshot.json` 恢复到本地库（幂等，会自动重映射主键与外键）|
 
 ## 运行时数据
 
