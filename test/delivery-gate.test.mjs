@@ -158,6 +158,9 @@ test('delivery_gate：必做上线项已 done 但检查用例未执行时仍不�
   // 检查用例回写 pass 后才恢复可交付
   const report = store.createTestReport(r.id, { caseId: lint.id, kind: 'code_check', status: 'running' })
   store.finishTestReport(report.id, { status: 'pass', summary: '无告警' })
+  // 检查用例也属于验收证据（b 口径：验收覆盖所有用例类型），
+  // 新增证据改变指纹后原签收失效，需重新签收才能恢复可交付。
+  store.upsertAcceptanceSignoff(r.id, { decision: 'accepted', comment: '复签：纳入检查用例' })
   const after = store.buildDeliveryGate(r.id)
   assert.equal(after.decision, 'ready')
   assert.equal(sourceOf(after, 'release').status, 'pass')
