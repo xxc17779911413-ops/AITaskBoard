@@ -67,3 +67,8 @@ hunk 区逐字节保留。禁止对整份 patch 做行前缀匹配——那会�
 **R8 前端 ConflictPane**：抽屉检测到 `precheck_conflict` 时提示并可打开 `ConflictPane`；
 面板展示 base / ours / theirs，支持逐文件编辑或采纳删除，调用同一 `resolve` / `confirm` / `abort`
 API，不另写前端专属业务逻辑。
+
+**R8.1 多文件编辑状态必须显式回收（N11 回归点）**：`ConflictPane` 把编辑状态收敛到纯模块
+`web/src/components/conflict-state.js`：切换文件前先 `commitCurrent()` 把当前编辑器内容写回
+`resolvedMap`；未处理项回落真实 ours/theirs，已处理为空保留空串（`handled` 标记与 content 区分）；
+「采纳删除」保留删除前草稿，点「保留内容」恢复该草稿而不是读已被清空的编辑器。

@@ -31,9 +31,7 @@
               @click="selectFile(f.file)"
             >
               <span class="file-name" :title="f.file">{{ f.file }}</span>
-              <el-tag size="small" :type="resolvedMap[f.file]?.deleted ? 'danger' : 'success'" effect="plain">
-                {{ resolvedMap[f.file]?.deleted ? '删除' : resolvedMap[f.file] ? '已处理' : '待处理' }}
-              </el-tag>
+              <el-tag size="small" :type="tagTypeFor(f.file)" effect="plain">{{ labelFor(f.file) }}</el-tag>
             </div>
           </div>
           <div class="conflict-actions">
@@ -79,6 +77,7 @@
 import { ref, computed, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api.js'
+import { applySaved, buildInitialMap, payloadFiles as buildPayload, setDeleted as setFileDeleted, statusOf, switchTo } from './conflict-state.js'
 
 const props = defineProps({ visible: Boolean, mergeId: [Number, String] })
 const emit = defineEmits(['update:visible', 'resolved'])
@@ -109,8 +108,8 @@ async function load() {
     merge.value = out.merge
     files.value = out.files || []
     currentPath.value = files.value[0]?.file || ''
-    resolvedMap.value = Object.fromEntries((out.merge?.resolvedFiles || []).map((f) => [f.path, f]))
-    syncEditor()
+    resolvedMap.value = applySaved(buildInitialMap(files.value), out.merge?.resolvedFiles || [])
+    resetEditor()
   } catch (e) {
     error.value = e?.message || String(e)
   } finally {
@@ -118,53 +117,46 @@ async function load() {
   }
 }
 
-function syncEditor() {
-  if (isDeleted.value) {
-    editContent.value = ''
-    return
-  }
-  const saved = resolvedMap.value[currentPath.value]
-  editContent.value = saved?.content ?? currentFile.value?.ours ?? currentFile.value?.theirs ?? ''
+function labelFor(path) {
+  const st = statusOf(resolvedMap.value[path])
+  return { pending: '待处理', handled: '已处理', deleted: '删除' }[st]
+}
+
+function tagTypeFor(path) {
+  const st = statusOf(resolvedMap.value[path])
+  return st === 'deleted' ? 'danger' : st === 'handled' ? 'success' : 'info'
+}
+
+/** 按当前记录重置编辑器；未处理回落真实内容，已处理为空保留空串。 */
+function resetEditor() {
+  const rec = resolvedMap.value[currentPath.value]
+  editContent.value = rec?.deleted ? '' : rec?.draft ?? rec?.content ?? currentFile.value?.ours ?? currentFile.value?.theirs ?? ''
 }
 
 function selectFile(path) {
-  currentPath.value = path
-  syncEditor()
+  const target = files.value.find((f) => f.file === path) || null
+  const out = switchTo(resolvedMap.value, currentFile.value, target, editContent.value)
+  resolvedMap.value = out.map
+  currentPath.value = out.path
+  editContent.value = out.content
 }
 
 function setDelete(deleted) {
   if (!currentFile.value) return
-  resolvedMap.value = {
-    ...resolvedMap.value,
-    [currentPath.value]: deleted
-      ? { path: currentPath.value, deleted: true, content: null }
-      : { path: currentPath.value, deleted: false, content: editContent.value }
-  }
-  syncEditor()
+  resolvedMap.value = setFileDeleted(resolvedMap.value, currentFile.value, deleted)
+  resetEditor()
 }
 
 function payloadFiles() {
-  return files.value.map((f) => {
-    const saved = resolvedMap.value[f.file]
-    if (saved?.deleted) return { path: f.file, delete: true }
-    return { path: f.file, content: saved?.content ?? (f.file === currentPath.value ? editContent.value : f.ours ?? f.theirs ?? '') }
-  })
+  return buildPayload(files.value, resolvedMap.value, currentPath.value, editContent.value)
 }
 
 async function saveResolve() {
   if (!currentFile.value) return
-  resolvedMap.value = {
-    ...resolvedMap.value,
-    [currentPath.value]: {
-      path: currentPath.value,
-      deleted: isDeleted.value,
-      content: isDeleted.value ? null : editContent.value
-    }
-  }
   saving.value = true
   try {
     const out = await api.mergeResolve(props.mergeId, payloadFiles(), false)
-    resolvedMap.value = Object.fromEntries((out.files || []).map((f) => [f.path, f]))
+    resolvedMap.value = applySaved(resolvedMap.value, out.files || [])
     merge.value = { ...merge.value, resolvedFiles: out.files }
     ElMessage.success('冲突处理结果已写回')
     emit('resolved', out)
