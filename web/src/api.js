@@ -86,6 +86,21 @@ export default {
   commitDuplicates: (nodeId, scope) => api(`/nodes/${nodeId}/duplicates?scope=${scope || 'self'}`),
   commitDedupe: (payload) => api('/commits/dedupe', { method: 'POST', body: JSON.stringify(payload) }),
 
+  // 合并 / 冲突处理（显式合并闭环）
+  mergeRecords: ({ nodeId, state } = {}) => {
+    const qs = new URLSearchParams()
+    if (nodeId) qs.set('nodeId', nodeId)
+    if (state) qs.set('state', state)
+    const suffix = qs.toString() ? `?${qs}` : ''
+    return api(`/merges${suffix}`)
+  },
+  mergeConflicts: (mid) => api(`/merges/${mid}/conflicts`),
+  mergeResolve: (mid, files, writeToWorktree = false) =>
+    api(`/merges/${mid}/resolve`, { method: 'POST', body: JSON.stringify({ files, writeToWorktree }) }),
+  mergeConfirm: (mid, mergeSha) =>
+    api(`/merges/${mid}/confirm`, { method: 'POST', body: JSON.stringify({ mergeSha: mergeSha || null }) }),
+  mergeAbort: (mid) => api(`/merges/${mid}/abort`, { method: 'POST', body: '{}' }),
+
   // IDE 桥：请求 IDEA 打开 diff（插件轮询领取）
   ideOpenDiff: (payload) => api('/ide/open-diff', { method: 'POST', body: JSON.stringify(payload) }),
 

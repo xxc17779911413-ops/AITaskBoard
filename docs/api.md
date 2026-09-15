@@ -453,6 +453,8 @@ curl -s -X POST http://127.0.0.1:3210/api/merges/12/resolve \
 new-file 补丁（`--- /dev/null` + `new file mode`），可直接在目标分支 `git apply`。
 若冲突处理结果是「采纳删除」，传 `{path, delete:true}` 或 `{path, content:null}` 获取 delete-file 补丁；
 `content` 传空串表示保留为空文件，不是删除。
+若文件是二进制（含 NUL），`patches[]` 会返回 `binary:true` 与说明；此时不要 `git apply`，
+改用 `writeToWorktree:true` 或直接按 `files[].content` 写回。
 
 ## agent 运行时 / 会话 / 任务
 

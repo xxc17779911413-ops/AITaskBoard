@@ -613,6 +613,33 @@ test('N10b：resolve 显式删除表达（delete:true / content:null）产出 de
   }
 })
 
+test('二进制补丁显式化：patches[].binary=true + 说明，提醒走写回而非 apply', async (t) => {
+  const { tmp, store, ops, repo, task } = await setup()
+  t.after(() => {
+    tmp.cleanup()
+    fs.rmSync(repo.root, { recursive: true, force: true })
+  })
+  // 构造二进制冲突：写入含 NUL 的内容
+  const bin = Buffer.from([0x00, 0x01, 0x02, 0x00, 0xff])
+  repo.g(['checkout', '-q', 'feature-send-receive'])
+  fs.writeFileSync(path.join(repo.dir, 'a.bin'), bin)
+  repo.g(['add', '.'])
+  repo.g(['commit', '-q', '-m', 'bin target'])
+  repo.g(['checkout', '-q', 'feature-send-receive-login'])
+  fs.writeFileSync(path.join(repo.dir, 'a.bin'), Buffer.from([0x00, 0x09, 0x09, 0x00, 0xfe]))
+  repo.g(['add', '.'])
+  repo.g(['commit', '-q', '-m', 'bin source'])
+
+  const run = await ops.runMerge(store, task.id, { confirm: true })
+  assert.equal(run.conflicts.length, 1)
+  const out = await ops.resolveMergeConflicts(store, run.conflicts[0].id, {
+    files: [{ path: 'a.bin', content: 'binary resolved' }]
+  })
+  assert.equal(out.patches[0].binary, true)
+  assert.match(out.patches[0].note, /writeToWorktree/)
+  assert.ok(out.files[0].contentHash, '内容写回本身仍成功')
+})
+
 test('ops merge：缺 confirm / 分支缺失 / 类型非法给稳定错误码', async (t) => {
   const { tmp, store, ops, repo, task, s } = await setup()
   t.after(() => {

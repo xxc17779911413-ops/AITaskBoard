@@ -1970,10 +1970,18 @@ export async function resolveMergeConflicts(store, mergeId, { files = [], writeT
       changed,
       deleted: incomingFile.deleted
     })
+    const binary = /Binary files .* differ/.test(patch)
     patches.push(
       changed
-        ? { path: filePath, patch, appliesTo: 'target', changed: true }
-        : { path: filePath, patch: '', appliesTo: 'target', changed: false, note: '内容与目标版本一致，无需应用补丁' }
+        ? {
+            path: filePath,
+            patch,
+            appliesTo: 'target',
+            changed: true,
+            binary,
+            ...(binary ? { note: '二进制内容无法生成可 apply 的文本补丁；请用 writeToWorktree 或直接写回内容' } : {})
+          }
+        : { path: filePath, patch: '', appliesTo: 'target', changed: false, binary: false, note: '内容与目标版本一致，无需应用补丁' }
     )
   }
 

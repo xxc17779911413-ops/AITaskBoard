@@ -59,3 +59,11 @@ hunk 区逐字节保留。禁止对整份 patch 做行前缀匹配——那会�
 **R6 删除意图必须可表达且三入口一致（N10b 回归点）**：resolve 用 `{path, delete:true}` 或
 `{path, content:null}` 表示「采纳删除」；`content:''` 仍表示「保留空文件」。删除分支写 `deleted:true`、
 `content:null`、`contentHash:null` 并产出 delete-file 补丁；`writeToWorktree:true` 时删除 worktree 内目标文件。
+
+**R7 二进制补丁边界显式化**：`git diff --no-index` 对二进制内容只产出 `Binary files ... differ`，
+不是可 `git apply` 的补丁。resolve 必须在 `patches[]` 上返回 `binary:true` + 可读 `note`
+（指引走 `writeToWorktree` 或直接写回内容），不得让下游误以为可 apply 而静默失败。
+
+**R8 前端 ConflictPane**：抽屉检测到 `precheck_conflict` 时提示并可打开 `ConflictPane`；
+面板展示 base / ours / theirs，支持逐文件编辑或采纳删除，调用同一 `resolve` / `confirm` / `abort`
+API，不另写前端专属业务逻辑。

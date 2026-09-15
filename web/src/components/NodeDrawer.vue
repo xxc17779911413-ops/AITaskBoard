@@ -153,6 +153,12 @@
         <div v-if="commits.length" style="display:flex;justify-content:flex-end;margin:4px 0">
           <el-button size="small" @click="openAllInIdea">在 IDEA 查看全部变更（{{ commits.length }}）</el-button>
         </div>
+        <el-alert v-if="pendingMerge" type="warning" :closable="false" style="margin:4px 0;padding:6px 10px">
+          <template #title>
+            <span>有 {{ pendingMerge.conflictFiles?.length || 0 }} 个冲突待处理（{{ pendingMerge.repo }}）</span>
+            <el-button link type="primary" size="small" style="margin-left:8px" @click="openConflicts(pendingMerge.id)">处理冲突</el-button>
+          </template>
+        </el-alert>
         <el-alert v-if="dupGroupCount" type="warning" :closable="false" style="margin:4px 0;padding:6px 10px">
           <template #title>
             <span>检测到 {{ dupGroupCount }} 组重复提交（worktree / 需求分支重复登记）</span>
@@ -220,6 +226,7 @@
   </el-drawer>
 
   <DiffPane v-model:visible="diffVisible" :commit="diffCommit" />
+  <ConflictPane v-model:visible="conflictVisible" :merge-id="conflictMergeId" @resolved="loadPendingMerge" />
 </template>
 
 <script setup>
@@ -228,6 +235,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api.js'
 import DocPane from './DocPane.vue'
 import DiffPane from './DiffPane.vue'
+import ConflictPane from './ConflictPane.vue'
 import Vditor from 'vditor'
 import 'vditor/dist/index.css'
 
@@ -285,6 +293,9 @@ const shortFingerprint = (v) => (v ? String(v).slice(0, 8) : '—')
 const commitForm = ref({ sha: '', repo: '', note: '' })
 const diffVisible = ref(false)
 const diffCommit = ref(null)
+const conflictVisible = ref(false)
+const conflictMergeId = ref(null)
+const pendingMerge = ref(null)
 
 /** 网页 → IDEA：请求插件打开该节点全部提交的合并变更 */
 async function openAllInIdea() {
@@ -349,6 +360,20 @@ function dupOf(row) {
 function openDiff(row) {
   diffCommit.value = row
   diffVisible.value = true
+}
+
+function openConflicts(id) {
+  conflictMergeId.value = id
+  conflictVisible.value = true
+}
+
+async function loadPendingMerge() {
+  try {
+    const out = await api.mergeRecords({ nodeId: props.node.id, state: 'precheck_conflict' })
+    pendingMerge.value = out.items?.[0] || null
+  } catch {
+    pendingMerge.value = null
+  }
 }
 
 function trackOf(row) {
@@ -482,6 +507,7 @@ async function loadDetail() {
   if (DESIGN_NODE_TYPES.includes(detail.type)) loadDesignOutline()
   loadTracks()
   loadDuplicates()
+  loadPendingMerge()
 }
 
 async function loadDeliveryGate() {

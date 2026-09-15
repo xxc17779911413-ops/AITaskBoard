@@ -12,6 +12,7 @@
 - **AI 可通过 CLI / MCP 读三方并写回**（同一能力暴露给三入口）
 - 本地应用完成后「确认合并完成」→ 回填 `merge_sha`，`merges.state = resolved`；放弃则 `aborted`（不改任何分支）
 - 也可生成「交给 IDE 的提示词」
+- 前端 `ConflictPane` 展示 base / ours / theirs 并写回处理结果；二进制补丁边界显式（`binary:true` + 说明），不诱导下游误 apply
 
 ## 接口（设计文档 §6）
 
