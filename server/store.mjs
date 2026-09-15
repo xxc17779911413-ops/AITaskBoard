@@ -2127,7 +2127,9 @@ export function createStore(db, options = {}) {
     return { ok: true, audit }
   }
 
-  function listAuditLogs({ action = null, nodeId = null, decision = null, limit = 100 } = {}) {
+  const AUDIT_LIMIT_MAX = 500
+
+  function listAuditLogs({ action = null, nodeId = null, decision = null, limit = null } = {}) {
     const where = []
     const args = []
     if (action) {
@@ -2137,9 +2139,15 @@ export function createStore(db, options = {}) {
       where.push('action = ?')
       args.push(action)
     }
+    // nodeId / limit 都是业务参数：非法值必须显式报错，不能静默变成「空集」或「不限条数」。
+    // 尤其 `LIMIT -1` 在 SQLite 里表示不设上限，会让非法 limit 静默返回全表。
     if (nodeId != null && nodeId !== '') {
+      const asText = String(nodeId).trim()
+      if (!/^\d+$/.test(asText) || Number(asText) <= 0) {
+        throw new AppError(CODES.VALIDATION_FAILED, `nodeId 必须是正整数，收到 ${nodeId}`, { nodeId })
+      }
       where.push('node_id = ?')
-      args.push(Number(nodeId))
+      args.push(Number(asText))
     }
     if (decision) {
       if (!AUDIT_DECISIONS.has(decision)) {
@@ -2148,8 +2156,15 @@ export function createStore(db, options = {}) {
       where.push('decision = ?')
       args.push(decision)
     }
+    const limitValue = limit === null || limit === undefined || limit === '' ? 100 : Number(limit)
+    if (!Number.isInteger(limitValue) || limitValue < 1 || limitValue > AUDIT_LIMIT_MAX) {
+      throw new AppError(CODES.VALIDATION_FAILED, `limit 需要是 1..${AUDIT_LIMIT_MAX} 的整数`, {
+        limit,
+        allowed: `1..${AUDIT_LIMIT_MAX}`
+      })
+    }
     const clause = where.length ? `WHERE ${where.join(' AND ')}` : ''
-    args.push(Number(limit) || 100)
+    args.push(limitValue)
     return db
       .prepare(`SELECT * FROM audit_logs ${clause} ORDER BY id DESC LIMIT ?`)
       .all(...args)

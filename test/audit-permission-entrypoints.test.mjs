@@ -145,3 +145,85 @@ test('审计/权限：CLI 与 MCP 与 store 一致；MCP 不泄漏 -32602', asyn
   assert.equal(mcpLogs.isError, undefined)
   assert.deepEqual(JSON.parse(mcpLogs.content[0].text), store.listAuditLogs({ action: 'requirement.transition' }))
 })
+
+test('审计/权限：MCP audit_list 非法 decision / nodeId / limit 一律 VALIDATION_FAILED，不泄漏 -32602', async (t) => {
+  const tmp = await tempHome()
+  const store = tmp.store.createStore(tmp.openDb())
+  store.recordAudit({ action: 'regression.run', nodeId: 1, actor: 'ai', decision: 'allowed' })
+  const { createMcpServer } = await import('../server/mcp.mjs')
+  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
+  const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js')
+  const server = createMcpServer({ store })
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+  await server.connect(serverTransport)
+  const client = new Client({ name: 'taskboard-audit-domain-test', version: '1.0.0' })
+  await client.connect(clientTransport)
+  t.after(async () => {
+    await client.close()
+    await server.close()
+    tmp.cleanup()
+  })
+
+  // 非法业务值必须走 handler 内 VALIDATION_FAILED，而不是 zod 的 -32602
+  for (const args of [
+    { decision: 'bogus' },
+    { nodeId: 'abc' },
+    { nodeId: -1 },
+    { limit: 'x' },
+    { limit: -1 },
+    { limit: 0 },
+    { limit: 99999 }
+  ]) {
+    const out = await client.callTool({ name: 'audit_list', arguments: args })
+    assert.equal(out.isError, true, JSON.stringify(args))
+    assert.match(out.content[0].text, /VALIDATION_FAILED/, JSON.stringify(args))
+    assert.doesNotMatch(out.content[0].text, /-32602/, JSON.stringify(args))
+  }
+
+  // 合法值与缺省仍可用
+  const ok = await client.callTool({ name: 'audit_list', arguments: { decision: 'allowed', limit: 10 } })
+  assert.equal(ok.isError, undefined)
+  assert.equal(JSON.parse(ok.content[0].text).length, 1)
+})
+
+test('审计/权限：store / HTTP / CLI 对非法 nodeId / limit 显式拒绝，不返回空集或全量', async (t) => {
+  const tmp = await tempHome()
+  const home = tmp.dir
+  const store = tmp.store.createStore(tmp.openDb())
+  store.recordAudit({ action: 'regression.run', nodeId: 1, actor: 'ai', decision: 'allowed' })
+  t.after(() => tmp.cleanup())
+
+  // store 层
+  for (const args of [{ nodeId: 'abc' }, { nodeId: 0 }, { limit: -1 }, { limit: 0 }, { limit: 501 }]) {
+    assert.throws(() => store.listAuditLogs(args), /VALIDATION_FAILED/, JSON.stringify(args))
+  }
+
+  // HTTP 层
+  const { createApp } = await import('../server/http.mjs')
+  const app = createApp({ store })
+  const server = await new Promise((resolve, reject) => {
+    const srv = app.listen(0, '127.0.0.1', () => resolve(srv))
+    srv.once('error', reject)
+  })
+  const base = `http://127.0.0.1:${server.address().port}`
+  t.after(async () => {
+    await new Promise((res) => server.close(res))
+  })
+  for (const qs of ['nodeId=abc', 'nodeId=0', 'limit=-1', 'limit=0', 'limit=501']) {
+    const res = await fetch(`${base}/api/audit-logs?${qs}`)
+    assert.equal(res.status, 400, qs)
+    assert.equal((await res.json()).error.code, 'VALIDATION_FAILED', qs)
+  }
+
+  // CLI 层：非法值非零退出
+  const cliFail = async (args) => {
+    try {
+      await execFileP('node', [CLI, ...args], { env: { ...process.env, TASKBOARD_HOME: home }, encoding: 'utf8' })
+      return false
+    } catch (e) {
+      return /VALIDATION_FAILED/.test(String(e.stderr || '') + String(e.stdout || ''))
+    }
+  }
+  assert.equal(await cliFail(['audit', 'list', '--node-id', 'abc']), true)
+  assert.equal(await cliFail(['audit', 'list', '--limit', '0']), true)
+})

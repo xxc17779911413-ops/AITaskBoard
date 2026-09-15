@@ -47,12 +47,19 @@ export function createMcpServer({ store }) {
     '操作审计日志（只读）：高风险操作（release.check / regression.run / requirement.transition / release.item.write）的 allowed / denied / confirmed 留痕',
     {
       action: z.string().optional(),
-      nodeId: z.number().optional(),
-      decision: z.enum(['allowed', 'denied', 'confirmed', 'pending']).optional(),
-      limit: z.number().optional()
+      // 这些都是业务值域参数：一律用宽松类型接收，交给 listAuditLogs 统一做 VALIDATION_FAILED，
+      // 避免 zod 在 handler 之前拦截成 SDK -32602（与 action / 其它聚合工具同一条纪律）。
+      nodeId: z.union([z.number(), z.string()]).optional(),
+      decision: z.string().optional(),
+      limit: z.union([z.number(), z.string()]).optional()
     },
     mcpValidate(async ({ action, nodeId, decision, limit }) => {
-      const list = store.listAuditLogs({ action: action || null, nodeId: nodeId ?? null, decision: decision || null, limit: limit || 100 })
+      const list = store.listAuditLogs({
+        action: action || null,
+        nodeId: nodeId ?? null,
+        decision: decision || null,
+        limit: limit === undefined || limit === null || limit === '' ? 100 : limit
+      })
       return { content: [{ type: 'text', text: JSON.stringify(list, null, 2) }] }
     })
   )

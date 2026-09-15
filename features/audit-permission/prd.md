@@ -25,6 +25,8 @@ AI / agent 现在是 TaskBoard 的主要操作者，但高风险操作（上线�
   `action` / `nodeId` / `actor` / `decision` / `reason` / `detail` / `createdAt`。
 - R5 可追溯查看：`listAuditLogs` 支持按 `action` / `nodeId` / `decision` / `limit` 筛选、倒序；三入口 1:1；
   Web「操作审计」页展示 KPI 与明细，节点可跳转。
+  非法值一律 `VALIDATION_FAILED`：`action` / `decision` 值域单点校验；`nodeId` 必须是正整数（非法值不得静默变空集）、
+  `limit` 必须是 1..500 的整数（不得落到 SQLite `LIMIT -1` 变成「不限条数」）。MCP 用宽松类型接收后由 store 统一拒绝，不泄漏 SDK `-32602`。
 - R6 审计是旁路观测：写审计日志**不额外 bump revision**（不放大数据版本噪声）。
 - R7 闸门位置：权限判定发生在真正的写操作 / 派单**之前**——被拒时不产生节点状态变更、报告或 agent 任务。
 
@@ -40,6 +42,7 @@ AI / agent 现在是 TaskBoard 的主要操作者，但高风险操作（上线�
 - `test/audit-permission.test.mjs`：权限判定（人工放行 / AI 需确认 / 未知 action 拒绝）；`PERMISSION_DENIED` 留 denied 审计；
   状态流转、上线项变更、两类派单的闸门（dryRun 不受限、真派单 AI 未确认被拒且无副作用）；审计筛选 / 倒序 / 非法值；审计不 bump revision。
 - `test/audit-permission-entrypoints.test.mjs`：HTTP 403 + `PERMISSION_DENIED`、确认后放行、人工放行、审计可见、非法筛选 400；
-  CLI（`--confirm`、`audit list` 与 store 一致）；MCP（`isError` 不含 `-32602`、确认后放行、`audit_list` 一致）。
+  CLI（`--confirm`、`audit list` 与 store 一致）；MCP（`isError` 不含 `-32602`、确认后放行、`audit_list` 一致）；
+  `audit_list` 非法 `decision` / `nodeId` / `limit` 一律 `VALIDATION_FAILED` 且不泄漏 `-32602`，非法 `nodeId` / `limit` 在 store / HTTP / CLI 也显式拒绝。
 - `test/audit-view.test.mjs`：展示口径（值域、标签、KPI 分桶、按 action 计数）。
 - `npm test` 全绿；`npm run build` 通过；文档同步更新（本目录 + `docs/design/04-api.md` + `docs/design/06-ui.md` + `docs/design/07-errors.md` + `docs/api.md` + `features/README.md`）。

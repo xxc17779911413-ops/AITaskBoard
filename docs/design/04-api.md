@@ -8,7 +8,7 @@
 | GET | `/api/health` | 健康检查，返回版本与数据文件路径 |
 | GET | `/api/schema` | 节点类型、状态值域、属性定义、工具清单（AI 能力发现） |
 | GET | `/api/revision` | 数据版本号（任何写入 +1），供前端轮询与 AI 判断变更 |
-| GET | `/api/audit-logs` | 操作审计日志（只读）：`?action=release.check\|regression.run\|requirement.transition\|release.item.write`、`?decision=allowed\|denied\|confirmed\|pending`、`?nodeId=`、`?limit=`；倒序；纯读不 bump revision |
+| GET | `/api/audit-logs` | 操作审计日志（只读）：`?action=release.check\|regression.run\|requirement.transition\|release.item.write`、`?decision=allowed\|denied\|confirmed\|pending`、`?nodeId=`（正整数）、`?limit=`（1..500，缺省 100）；非法值 `VALIDATION_FAILED`（不静默变空集 / 不限条数）；倒序；纯读不 bump revision |
 | GET | `/api/tree?format=md` | 缩进 markdown 树（AI 读取用）；默认 `json` |
 | GET | `/api/tree` | 全量树数据：`[{id,type,parentId,name,status,sort,attrs:{key:value}}]`，前端组树与过滤 |
 | GET | `/api/nodes/:id` | 节点详情：核心字段 + `attrs` + `commits` + `mrs` + `children` |

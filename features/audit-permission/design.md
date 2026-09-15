@@ -35,6 +35,12 @@ SCHEMA 对新库生效，`migrate()` 的 v6 段对老库幂等补表。
 **R5 值域统一**：`action` 与 `decision` 都走 `RISK_ACTIONS` / `AUDIT_DECISIONS` 单点定义；
 未知值一律 `VALIDATION_FAILED`（不静默降级、不当放行）。
 
+**R5.1 分页参数也按业务值域拒绝**：`listAuditLogs` 的 `nodeId` 必须是正整数、`limit` 必须是
+`1..500` 的整数，否则 `VALIDATION_FAILED`。不能静默把非法 `nodeId` 当成「查无结果」（返回 `[]`），
+也不能让 `limit=-1` 落到 SQLite 的 `LIMIT -1`（= 不限条数）把全表返回。
+三入口都不做 zod 强类型前置：`decision` / `nodeId` / `limit` 用宽松类型接收，统一交给 `listAuditLogs`
+校验并转 `VALIDATION_FAILED`，避免 MCP 在 handler 前被 zod 拦成 SDK `-32602`（与 `action` 同一条纪律）。
+
 ## 3. 对外接口
 
 ```js

@@ -1,3 +1,4 @@
 # 提交记录：权限边界与操作审计
 
 - feat(audit-permission): 权限边界与操作审计纵向切片——新增 `audit_logs` 表（v6 迁移）+ `PERMISSION_DENIED` 错误码；`checkRiskPermission`/`requireRiskPermission`/`recordAudit`/`listAuditLogs` 单点定义四类高风险操作（release.check / regression.run / requirement.transition / release.item.write）；人工通道（user/cli/import）放行、AI 通道（ai/mcp，含历史 actor）需显式 confirm，闸门放在副作用之前（拒绝不产生状态变更/报告/agent 任务），审计无论放行/拒绝/确认都留痕且不 bump revision；三入口 1:1（HTTP 403 + `/api/audit-logs`、CLI `--confirm` + `audit list`、MCP `confirm` + `audit_list`）；Web 顶栏「操作审计」页（KPI + 明细 + 节点跳转，`web/src/audit.js` 纯展示口径）；补 store/入口/展示口径回归
+- fix(audit-permission): 收口 QA 的 MCP `audit_list` 值域泄漏——`decision` 从 `z.enum` 改 `z.string()`（`nodeId`/`limit` 同用宽松类型），非法值统一落到 `listAuditLogs` 的 `VALIDATION_FAILED`，不再于 handler 前被 zod 拦成 SDK `-32602`；同时收紧 `nodeId`（正整数）与 `limit`（1..500）值域，非法值显式报错、不再静默变空集或落成 SQLite `LIMIT -1`（不限条数）；补 MCP 非法 `decision`/`nodeId`/`limit` 回归 + store/HTTP/CLI 边界回归 + 把 `audit_list` 纳入 scope-validation 横切不泄漏清单

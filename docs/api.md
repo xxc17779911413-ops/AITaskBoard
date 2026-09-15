@@ -539,6 +539,7 @@ curl -s 'http://127.0.0.1:3210/api/audit-logs?action=release.item.write&nodeId=3
 # node bin/taskboard.js audit list [--action release.check|regression.run|requirement.transition|release.item.write] [--decision allowed|denied|confirmed|pending] [--node-id N]
 # node bin/taskboard.js requirement transition "项目A/需求1" --status doing --actor ai --confirm
 # MCP: audit_list { action?, nodeId?, decision?, limit? }；高风险 tool 传 confirm: true
+# 非法 action / decision / nodeId / limit 一律 VALIDATION_FAILED（MCP 走 isError，不泄漏 -32602）；nodeId 正整数、limit 1..500
 ```
 
 > 四类高风险操作：`release.check`（上线检查派单）/ `regression.run`（回归派单）/

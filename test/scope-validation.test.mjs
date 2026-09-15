@@ -133,10 +133,12 @@ test('scope：其余 MCP 工具也不泄漏 -32602（横切契约）', async (t)
     ['node_diffs', { ref: 'P', scope: 'sub' }],
     ['node_tracks', { ref: 'P', scope: 'sub' }],
     ['commit_duplicates', { ref: 'P', scope: 'sub' }],
-    ['release_check', { node: p.id, scope: 'sub', dryRun: true }]
+    ['release_check', { node: p.id, scope: 'sub', dryRun: true }],
+    // audit_list 没有 scope，但同样必须把业务值域错误收敛为 VALIDATION_FAILED，不泄漏 -32602
+    ['audit_list', { decision: 'bogus' }]
   ]) {
     const out = await call(tool, args)
-    assert.equal(out.isError, true, `${tool} 应当拒绝非法 scope`)
+    assert.equal(out.isError, true, `${tool} 应当拒绝非法值`)
     assert.match(out.content[0].text, /VALIDATION_FAILED/, tool)
     assert.ok(!/MCP error -32602/.test(out.content[0].text), `${tool} 不得泄漏 SDK -32602`)
   }
