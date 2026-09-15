@@ -1400,22 +1400,46 @@ export function createStore(db, options = {}) {
     assertReportStatus(status)
     assertReportRefs(nodeId, { caseId, runId })
     const ts = now()
-    const info = db
-      .prepare(
-        'INSERT INTO test_reports (node_id,case_id,run_id,kind,status,summary,detail,started_at,finished_at,updated_at,created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
-      )
-      .run(nodeId, caseId, runId, kind, status, summary, detail, ts, status === 'running' ? null : ts, ts, actor(by))
+    let reportId
+    withoutBump(() => {
+      const info = db
+        .prepare(
+          'INSERT INTO test_reports (node_id,case_id,run_id,kind,status,summary,detail,started_at,finished_at,updated_at,created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
+        )
+        .run(nodeId, caseId, runId, kind, status, summary, detail, ts, status === 'running' ? null : ts, ts, actor(by))
+      reportId = Number(info.lastInsertRowid)
+      // 时序兜底：runTestCases 先派单、后逐条建报告，若 agent 在这之间就落了终态，
+      // finalizeReportsForRun 当时扫不到这条新报告，会让它永远停在 running。
+      // 这里在插入后若发现关联 run 已是终态，立即补一次收尾（仍只算一次 revision）。
+      if (status === 'running' && runId != null) {
+        const run = db.prepare('SELECT status, output FROM agent_runs WHERE id = ?').get(Number(runId))
+        if (run && TERMINAL_RUN_STATUSES.has(run.status)) {
+          finalizeReportsForRun(Number(runId), { runStatus: run.status, output: run.output })
+        }
+      }
+    })
     bumpRevision()
-    return testReportVO(db.prepare('SELECT * FROM test_reports WHERE id = ?').get(Number(info.lastInsertRowid)))
+    return testReportVO(db.prepare('SELECT * FROM test_reports WHERE id = ?').get(reportId))
   }
 
   function listTestReports(nodeId, { caseId = null, kind = null, limit = 100 } = {}) {
     rawNode(nodeId)
+    // caseId / kind 过滤必须下沉到 SQL WHERE：否则先取「最新 limit 条」再在内存里过滤，
+    // 节点报告数超过 limit（HTTP/CLI/MCP 默认 100）时，旧用例 / 旧类型的报告会被窗口截掉，筛出空列表。
+    const where = ['node_id = ?']
+    const args = [nodeId]
+    if (caseId) {
+      where.push('case_id = ?')
+      args.push(Number(caseId))
+    }
+    if (kind) {
+      where.push('kind = ?')
+      args.push(kind)
+    }
+    args.push(Number(limit) || 100)
     return db
-      .prepare('SELECT * FROM test_reports WHERE node_id = ? ORDER BY id DESC LIMIT ?')
-      .all(nodeId, Number(limit) || 100)
-      .filter((r) => (caseId ? r.case_id === Number(caseId) : true))
-      .filter((r) => (kind ? r.kind === kind : true))
+      .prepare(`SELECT * FROM test_reports WHERE ${where.join(' AND ')} ORDER BY id DESC LIMIT ?`)
+      .all(...args)
       .map(testReportVO)
   }
 

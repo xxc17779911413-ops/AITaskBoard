@@ -24,6 +24,11 @@
 - 报告区：`GET /api/nodes/:id/test-reports`（倒序、可按 `caseId` 筛）、`GET /api/test-reports/:rid`、
   `PATCH /api/test-reports/:rid` 回写终态。面板只做展示与触发，状态机、引用完整性、自动收尾都留在 store。
 
+**报告列表的筛选与分页顺序**：`listTestReports` 的 `caseId` / `kind` 过滤下沉到 SQL `WHERE`，
+`LIMIT` 作用于**过滤后**的结果。否则先取「最新 limit 条」再在内存里过滤，节点报告数超过
+默认 limit（HTTP / CLI / MCP 默认 100）时，旧用例 / 旧类型的报告会被窗口截掉、筛出空列表。
+三入口只透传 `caseId` / `kind` / `limit`，口径由 store 单点保证。
+
 ## 2. 关键规则
 
 **R1 为什么挂在任意节点上**：需求 / 子需求 / 任务组 / 子任务都可能需要回归；缺陷也常需要复现验证。
@@ -64,6 +69,10 @@ agent 任务结束后由前台执行者（或后续收尾钩子）用 `test_repo
 解析不到该用例结论时按 run 终态回落：`success → blocked`（**不报 pass**，避免把「跑成功但没给结论」伪造成绿灯）、
 `timeout`/`cancelled → cancelled`、`failed → error`。收尾打 `auto_finalized=1` 标记，且只碰仍 `running` 的报告，
 不覆盖人工已回写的终态；「收尾任务 + 收尾报告」用 `withoutBump` 合并为**一次** revision 递增。
+
+**R5.2 建报告的时序兜底**：`runTestCases` 是「先 `startAgentRun` 派单、后逐条 `createTestReport`」，
+理论上存在「run 先落终态、报告后创建」的窗口——此时 `finalizeReportsForRun` 已经扫过一轮，新报告会永远停在 `running`。
+因此 `createTestReport` 在插入后若发现关联 run 已是终态，立即对该 run 补一次收尾（同样 `withoutBump` 合并为一次 revision）。
 
 **R6 验收分桶（总数守恒）**：
 

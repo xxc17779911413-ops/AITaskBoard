@@ -36,4 +36,5 @@
 - `test/test-case.test.mjs`：用例 CRUD、按名唯一与 upsert 幂等、`kind` 筛选、启停、排序、随节点级联删除；报告的开启 / 回写 / 筛选 / 删除用例后保留历史；验收报告聚合（最近结果、通过率、未执行口径）、`scope=subtree`、空态；编排层 `dryRun` 与提示词拼装。
 - `test/http.test.mjs`：全链路（upsert → dryRun → 报告 → 验收报告）、重名返回 `TEST_CASE_NAME_EXISTS`、报告列表 / 单条 / 回写终态。
 - `test/regression-view.test.mjs` + `test/http.test.mjs`「回归面板」：Web 面板（`RegressionPane.vue` + `regression.js`）的展示口径——通过率「已完结」口径、分桶总数守恒、`not_run` 显示为「未执行」、KPI 与报告列表一致；并按面板实际调用序列打 HTTP（用例 upsert / 筛选 / dryRun / 报告列表 / 回写 / 验收 / 删除用例保留历史）。
+- `test/test-report-filter-entrypoints.test.mjs` + `test/test-case.test.mjs`：报告筛选在 `LIMIT` 之前生效——节点报告数 > 默认 limit 时，按 `caseId` 与 `kind` 仍能筛到旧报告；store / HTTP / CLI / MCP 四入口逐字段一致。另覆盖 `createTestReport` 的「run 已终态则立即补收尾」时序兜底。
 - `npm test` 全绿；三入口 1:1；文档同步更新（本目录 + `docs/design/02-data-model.md` + `docs/design/04-api.md` + `docs/api.md` + `features/README.md`）。

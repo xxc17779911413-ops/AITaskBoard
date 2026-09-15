@@ -349,3 +349,52 @@ test('缺陷4回归：报告的 caseId 必须属于同节点；runId 必须存�
   const ok = store.createTestReport(task.id, { caseId: mine.id })
   assert.equal(ok.caseId, mine.id)
 })
+
+test('缺陷回归：报告筛选在 LIMIT 之前生效，报告数 > limit 仍能筛到旧报告', async (t) => {
+  const { tmp, store, task } = await setup()
+  t.after(() => tmp.cleanup())
+  // 旧用例 c1（报告会被后续 150 条挤出默认 limit=100 的窗口）
+  const c1 = store.createTestCase(task.id, { name: '旧用例', prompt: 'p', kind: 'acceptance' })
+  for (let i = 0; i < 5; i += 1) store.createTestReport(task.id, { caseId: c1.id, kind: 'acceptance' })
+  // 新用例 c2 堆 150 条 regression 报告
+  const c2 = store.createTestCase(task.id, { name: '新用例', prompt: 'p', kind: 'regression' })
+  for (let i = 0; i < 150; i += 1) store.createTestReport(task.id, { caseId: c2.id, kind: 'regression' })
+
+  // 未过滤时默认窗口就是最新 100 条
+  assert.equal(store.listTestReports(task.id).length, 100)
+  // 按 caseId 筛选：旧用例的 5 条必须能筛到（原问题：先 LIMIT 再内存过滤 → 空列表）
+  const byCase = store.listTestReports(task.id, { caseId: c1.id })
+  assert.equal(byCase.length, 5)
+  assert.equal(byCase.every((r) => r.caseId === c1.id), true)
+  // 按 kind 筛选：acceptance 也应筛到 5 条（旧类型同样被窗口挤出）
+  const byKind = store.listTestReports(task.id, { kind: 'acceptance' })
+  assert.equal(byKind.length, 5)
+  assert.equal(byKind.every((r) => r.kind === 'acceptance'), true)
+  // caseId + kind 叠加仍生效
+  assert.equal(store.listTestReports(task.id, { caseId: c1.id, kind: 'acceptance' }).length, 5)
+  // 显式 limit 作用于过滤后的结果：取最新 3 条
+  const limited = store.listTestReports(task.id, { caseId: c1.id, limit: 3 })
+  assert.equal(limited.length, 3)
+  assert.ok(limited[0].id > limited[1].id)
+})
+
+test('缺陷回归：run 已终态后创建的报告立即收尾，不停留在 running', async (t) => {
+  const { tmp, store, task, s } = await setup()
+  t.after(() => tmp.cleanup())
+  const c = store.createTestCase(task.id, { name: 'A', prompt: 'p' })
+  // 造一个已落终态的 agent run（报告中不含该用例的显式结论 → 按设计回落 blocked，不伪造成 pass）
+  const run = store.createAgentRun(s.id, { prompt: 'no verdicts here', cwd: '/tmp' })
+  store.finishAgentRun(run.id, { status: 'success' })
+  assert.equal(store.getAgentRun(run.id).status, 'success')
+
+  // 在 run 已终态之后才建报告：若不兜底会永远停在 running
+  const rep = store.createTestReport(task.id, { caseId: c.id, runId: run.id, kind: 'regression' })
+  assert.notEqual(rep.status, 'running')
+  assert.equal(rep.status, 'blocked')
+  assert.equal(rep.autoFinalized, true)
+
+  // 仍处于 running 的 run 不受影响
+  const liveRun = store.createAgentRun(s.id, { prompt: 'still running', cwd: '/tmp' })
+  const liveRep = store.createTestReport(task.id, { caseId: c.id, runId: liveRun.id, kind: 'regression' })
+  assert.equal(liveRep.status, 'running')
+})
