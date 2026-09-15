@@ -27,6 +27,11 @@
 **R5 筛选只影响展示**：`totals.total` 是筛选前节点数，`totals.nodes` 是筛选后；`edges` 只保留两端都在
 结果集里的连接，避免悬空。非法筛选值一律 `VALIDATION_FAILED`（不静默降级），与 `scope` / `format` 同纪律。
 
+**R5.1 `status` 是需求状态，只作用于需求两层**：`status` 的值域由 `assertRequirementStatus` 守住，
+匹配时还必须限定 `requirement` / `subreq`。project / group / task 的 `status` 列同样存字符串
+（默认 `todo`、可被 `updateNode` 改），不限定类型就会让「按需求状态筛选」混入非需求节点
+（例如选「已完成」看到任务组 / 子任务）。
+
 **R6 与既有导图的关系**：`mindmap`（xpx-126）是纯树 mermaid 文本投影，只有 `name`；
 本功能在其上加状态叠加与筛选，不重复实现 mermaid 文本。
 

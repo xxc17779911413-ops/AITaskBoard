@@ -1964,7 +1964,10 @@ export function createStore(db, options = {}) {
 
     const matches = (n) => {
       if (typeFilter && n.type !== typeFilter) return false
-      if (statusFilter && n.status !== statusFilter) return false
+      // `status` 是**需求状态**（值域由 assertRequirementStatus 守住），只对 requirement / subreq 生效；
+      // project / group / task 的 status 列同样存字符串（默认 todo、可被 updateNode 改），
+      // 不限定类型就会让「按需求状态筛选」混入非需求节点。
+      if (statusFilter && (!READINESS_UNIT_TYPES.has(n.type) || n.status !== statusFilter)) return false
       if (readyFilter !== null && n.ready !== readyFilter) return false
       if (hasGapFilter !== null && n.hasGap !== hasGapFilter) return false
       if (caseStatusFilter && n.caseStatus !== caseStatusFilter) return false

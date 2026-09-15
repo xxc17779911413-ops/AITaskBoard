@@ -124,6 +124,30 @@ test('structure_graph：非法筛选值一律 VALIDATION_FAILED（不静默降�
   assert.throws(() => store.buildStructureGraph(p.id, { caseStatus: 'bogus' }), /VALIDATION_FAILED/)
 })
 
+test('structure_graph：status 筛选只命中需求两层，不因非需求节点同值 status 混入', async (t) => {
+  const { tmp, store, p, r, s, task } = await setup()
+  t.after(() => tmp.cleanup())
+  // 非需求节点（project / group / task）持有与需求相同的 status 值作为干扰
+  const g = store.createNode({ parentId: s.id, type: 'group', name: 'G' })
+  store.updateNode(p.id, { status: 'done' })
+  store.updateNode(g.id, { status: 'done' })
+  store.updateNode(task.id, { status: 'done' })
+  // 需求两层：R 推进到 done，S 保持 todo（默认）
+  store.updateNode(r.id, { status: 'doing' })
+  store.updateNode(r.id, { status: 'testing' })
+  store.updateNode(r.id, { status: 'done' })
+
+  const done = store.buildStructureGraph(p.id, { scope: 'subtree', status: 'done' })
+  // 只有 requirement R 命中；project P / group G / task T 同值 done 不得混入
+  assert.deepEqual(done.nodes.map((n) => n.name), ['R'])
+  assert.equal(done.nodes.every((n) => n.type === 'requirement' || n.type === 'subreq'), true)
+
+  // todo 同理：S(subreq) 命中，P(project) / G(group) / T(task) 默认 todo 不得混入
+  const todo = store.buildStructureGraph(p.id, { scope: 'subtree', status: 'todo' })
+  assert.deepEqual(todo.nodes.map((n) => n.name), ['S'])
+  assert.equal(todo.nodes.every((n) => n.type === 'requirement' || n.type === 'subreq'), true)
+})
+
 test('structure_graph：纯读聚合，不产生 revision', async (t) => {
   const { tmp, store, p, r } = await setup()
   t.after(() => tmp.cleanup())
