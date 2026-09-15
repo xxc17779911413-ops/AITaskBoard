@@ -54,6 +54,7 @@
 | **并行派单**（回归用例 fan-out：每条用例一个独立 agent 任务，`maxParallel` 护栏） | `test-fanout/` | — | server/ops.mjs（runTestCases 的 fanout 分支）+ 三入口 test_run 的 `fanout`/`maxParallel` |
 | **文档敏感信息扫描**（节点/子树文档只读凭据扫描；高危阻塞、证据强制脱敏、空态 ready=null） | `secret-scan/` | — | server/store.mjs（buildSecretScan）+ server/ops.mjs（renderSecretScanMd）+ 三入口 secret_scan |
 | **交付证据快照**（冻结交付门禁完整依据 + 指纹，读取时核对 current / drifted，供验收与上线审计） | `delivery-snapshot/` | — | server/{db,store,http,cli,mcp,ops}.mjs（delivery_snapshots）+ NodeDrawer「交付」页 |
+| **研发主线思维导图**（需求 → 设计/文档 → 回归 → 报告 → 验收 → 上线治理的只读图投影） | `workflow-map/` | — | server/{store,ops}.mjs（buildWorkflowMap）+ 三入口 workflow_map + NodeDrawer「主线」页签（WorkflowMapPane） |
 
 ### 已实现但**不设独立目录**（语义并入上述目录，避免索引重复）
 

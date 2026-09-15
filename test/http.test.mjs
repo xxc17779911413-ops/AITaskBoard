@@ -617,6 +617,35 @@ test('缺陷5回归：报告接口接受 runId 字段并与 MCP/CLI 契约一致
   tmp.cleanup()
 })
 
+// ---------- 研发主线思维导图 ----------
+
+test('研发主线思维导图：HTTP 只读聚合 + markdown 输出', async () => {
+  const { tmp, store, post, get, base, close } = await setup()
+  const p = await post('/api/nodes', { type: 'project', name: 'P' })
+  const r = await post('/api/nodes', { parentId: p.id, type: 'requirement', name: 'R' })
+  await post(`/api/nodes/${r.id}/documents/upsert`, { name: '需求内容', content: '需求正文' })
+  await post(`/api/nodes/${r.id}/documents/upsert`, { name: '概要设计', content: '设计正文' })
+  const c = await post(`/api/nodes/${r.id}/test-cases/upsert`, { name: '回归用例', prompt: '跑单测' })
+  const rep = store.createTestReport(r.id, { caseId: c.id, kind: 'regression' })
+  store.finishTestReport(rep.id, { status: 'pass' })
+  await post(`/api/nodes/${r.id}/release-items/upsert`, { name: '执行上线 SQL', kind: 'sql', status: 'pending' })
+
+  const map = await get(`/api/nodes/${r.id}/workflow-map`)
+  assert.equal(map.scope, 'self')
+  assert.equal(map.status, 'fail')
+  assert.equal(map.stages.length, 12)
+  assert.ok(map.nodes.some((n) => n.type === 'branch' && n.stage === 'release_sql' && n.status === 'fail'))
+
+  const raw = await fetch(`${base}/api/nodes/${r.id}/workflow-map?format=md`)
+  assert.equal(raw.status, 200)
+  const md = await raw.text()
+  assert.match(md, /研发主线思维导图/)
+  assert.match(md, /上线 SQL/)
+
+  await close()
+  tmp.cleanup()
+})
+
 // ---------- 上线治理 ----------
 
 test('上线治理：上线项 upsert → 清单 → 就绪结论（HTTP 全链路）', async () => {

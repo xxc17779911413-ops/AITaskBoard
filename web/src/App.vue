@@ -17,7 +17,7 @@
       <AttrDefsView v-if="view === 'attr-defs'" />
       <SettingsView v-if="view === 'settings'" />
     </el-main>
-    <NodeDrawer v-if="selectedNode" :node="selectedNode" :visible="drawerVisible" :initial-tab="drawerTab" @close="drawerVisible = false" @updated="onNodeUpdated" />
+    <NodeDrawer v-if="selectedNode" :node="selectedNode" :visible="drawerVisible" :initial-tab="drawerTab" @close="drawerVisible = false" @updated="onNodeUpdated" @select="onNodeSelect" />
   </el-container>
 </template>
 

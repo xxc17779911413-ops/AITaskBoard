@@ -323,6 +323,21 @@ test('runReleaseChecks：caseIds 过滤检查用例', async (t) => {
   assert.deepEqual(out.cases.map((c) => c.name), ['A'])
 })
 
+test('runReleaseChecks：显式 caseIds=[] 表示只执行上线清单，缺省才不过滤', async (t) => {
+  const { tmp, store, task } = await setup()
+  t.after(() => tmp.cleanup())
+  const { runReleaseChecks } = await import('../server/ops.mjs')
+  store.createTestCase(task.id, { name: 'A', prompt: 'p', kind: 'code_check' })
+  store.createReleaseItem(task.id, { name: '执行上线 SQL', kind: 'sql' })
+
+  const empty = runReleaseChecks(store, task.id, { dryRun: true, caseIds: [] })
+  assert.equal(empty.cases.length, 0)
+  assert.equal(empty.items.length, 1)
+
+  const unspecified = runReleaseChecks(store, task.id, { dryRun: true })
+  assert.deepEqual(unspecified.cases.map((c) => c.name), ['A'])
+})
+
 test('renderReleaseChecklistMd：输出可贴进上线单的 markdown', async (t) => {
   const { tmp, store, r } = await setup()
   t.after(() => tmp.cleanup())

@@ -127,6 +127,12 @@
 其它取值一律 `400 VALIDATION_FAILED`，三入口不做静默降级。交付门禁的验收来源只聚合**启用中**的测试用例：
 停用用例既不算 `notRun`，也不阻塞交付（与需求就绪门禁口径一致）。
 
+### 研发主线思维导图（需求 → 设计 / 文档 → 回归 → 报告 → 验收 → 上线治理）
+
+| Method | Path | 说明 |
+|---|---|---|
+| GET | `/api/nodes/:id/workflow-map` | 研发主线思维导图：`?scope=self\|subtree`，`?format=json\|md`（非法 `format` → 400 `VALIDATION_FAILED`，值域与 REST/CLI/MCP 一致）。以节点树为骨架，投影需求管理 / 概要设计 / 文档管理 / 思维导图 / AI 可回归测试 / 测试报告 / 验收报告，以及上线配置 / 上线 SQL / 上线检查 / 代码检查 / 业务检查；每个需求单元在各阶段生成分支，状态为 `pass` / `fail` / `pending` / `empty`（空态 ≠ 通过）；空白预置文档不计通过、`mindmap` 不参与根聚合、检查分支按逐用例最严重状态收敛；返回 `stages` / `units` / `nodes` / `edges` / `totals`，上线分支附 `releaseItems` / `checkCases` / `latestReportId` 稳定引用；**纯读聚合，不写库、不动 revision**；图上的写回由既有 `release-items` / `release-checks` / `test-reports` 接口显式完成 |
+
 ### 上线治理（上线配置 / 上线 SQL / 上线检查清单）
 
 | Method | Path | 说明 |

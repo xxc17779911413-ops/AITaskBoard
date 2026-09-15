@@ -3260,6 +3260,391 @@ export function createStore(db, options = {}) {
     return deliverySnapshotVO(row)
   }
 
+  const WORKFLOW_STAGES = [
+    { key: 'requirement', label: '需求管理', group: 'mainline' },
+    { key: 'design', label: '概要设计', group: 'mainline' },
+    { key: 'documents', label: '文档管理', group: 'mainline' },
+    { key: 'mindmap', label: '思维导图', group: 'mainline' },
+    { key: 'regression', label: 'AI 可回归测试', group: 'mainline' },
+    { key: 'test_report', label: '测试报告', group: 'mainline' },
+    { key: 'acceptance', label: '验收报告', group: 'mainline' },
+    { key: 'release_config', label: '上线配置', group: 'release' },
+    { key: 'release_sql', label: '上线 SQL', group: 'release' },
+    { key: 'release_check', label: '上线检查', group: 'release' },
+    { key: 'code_check', label: '代码检查', group: 'release' },
+    { key: 'biz_check', label: '业务检查', group: 'release' }
+  ]
+
+  const WORKFLOW_STATUS_WEIGHT = { fail: 4, pending: 3, pass: 2, empty: 1 }
+  // 仅参与整体聚合的阶段：mindmap 是“这张图已渲染出来”的展示性事实，
+  // 不能作为研发进展证据，否则空项目也会被它抬成 pass。
+  const WORKFLOW_EVIDENCE_STAGES = new Set(WORKFLOW_STAGES.map((s) => s.key).filter((key) => key !== 'mindmap'))
+  const workflowWorstStatus = (items) => {
+    const statuses = items.map((i) => i.status || 'empty')
+    return statuses.reduce(
+      (worst, cur) => (WORKFLOW_STATUS_WEIGHT[cur] > WORKFLOW_STATUS_WEIGHT[worst] ? cur : worst),
+      'empty'
+    )
+  }
+
+  function workflowStageSummary(stageKey, unitItems) {
+    const items = unitItems.filter((i) => i.stage === stageKey)
+    const status = workflowWorstStatus(items)
+    const counts = items.reduce(
+      (acc, item) => {
+        acc[item.status] = (acc[item.status] || 0) + 1
+        return acc
+      },
+      { pass: 0, fail: 0, pending: 0, empty: 0 }
+    )
+    return {
+      status,
+      detail:
+        status === 'empty'
+          ? '暂无数据'
+          : `通过 ${counts.pass || 0} · 未通过 ${counts.fail || 0} · 待处理 ${counts.pending || 0} · 空 ${counts.empty || 0}`,
+      counts
+    }
+  }
+
+  /**
+   * 检查类阶段按“逐用例最严重状态”收敛：
+   * fail/blocked/error/cancelled → fail；running/not_run → pending；全部 pass 才 pass。
+   * 不能用“最新一条报告”代表整个检查分支，否则一条 pass 会掩盖同 kind 下未执行的用例。
+   */
+  function workflowCheckStatus(checkCases) {
+    if (!checkCases.length) return 'empty'
+    let hasPending = false
+    for (const item of checkCases) {
+      const status = item.latestStatus || 'not_run'
+      if (status === 'pass') continue
+      if (status === 'running' || status === 'not_run') {
+        hasPending = true
+        continue
+      }
+      return 'fail'
+    }
+    return hasPending ? 'pending' : 'pass'
+  }
+
+  function workflowItem({ stage, unit, status, detail, meta = {} }) {
+    const id = `branch:${stage}:${unit.id}`
+    return {
+      id,
+      type: 'branch',
+      stage,
+      unitId: unit.id,
+      label: unit.name,
+      status,
+      detail,
+      meta
+    }
+  }
+
+  function latestReportStatusForKind(nodeId, kind) {
+    const reports = listTestReports(nodeId, { kind, limit: 100 })
+    if (reports.length === 0) return null
+    return reports[0].status
+  }
+
+  /** 每个检查用例的最近一次报告（前端按用例回写终态时使用）。 */
+  function latestReportsByCase(nodeId, kind) {
+    const reports = listTestReports(nodeId, { kind, limit: 300 })
+    const byCase = new Map()
+    for (const report of reports) {
+      if (report.caseId == null || byCase.has(report.caseId)) continue
+      byCase.set(report.caseId, report)
+    }
+    return byCase
+  }
+
+  function releaseItemsMeta(items) {
+    return items.map((item) => ({
+      id: item.id,
+      name: item.name,
+      kind: item.kind,
+      status: item.status,
+      required: item.required,
+      rollback: item.rollback
+    }))
+  }
+
+  function checkCasesMeta(cases, reportByCase) {
+    return cases.map((testCase) => {
+      const latest = reportByCase.get(testCase.id) || null
+      return {
+        id: testCase.id,
+        name: testCase.name,
+        kind: testCase.kind,
+        latestReportId: latest ? latest.id : null,
+        latestStatus: latest ? latest.status : 'not_run'
+      }
+    })
+  }
+
+  function mapReportStatus(status) {
+    if (!status) return 'empty'
+    if (status === 'pass') return 'pass'
+    if (status === 'running') return 'pending'
+    return 'fail'
+  }
+
+  function mapReleaseItems(items) {
+    if (items.length === 0) return { status: 'empty', detail: '暂无登记' }
+    const requiredPending = items.filter((i) => i.required && i.status !== 'done' && i.status !== 'skipped')
+    const blocked = items.filter((i) => i.status === 'blocked')
+    const status = requiredPending.length > 0 || blocked.length > 0 ? 'fail' : 'pass'
+    return {
+      status,
+      detail: `共 ${items.length} 项 · 必做 ${items.filter((i) => i.required).length} · 完成 ${items.filter((i) => i.status === 'done').length} · 跳过 ${items.filter((i) => i.status === 'skipped').length} · 阻塞 ${blocked.length}`
+    }
+  }
+
+  function buildWorkflowMap(nodeId, { scope = 'self' } = {}) {
+    const root = rawNode(nodeId)
+    const effectiveScope = normalizeScope(scope)
+    const ids = effectiveScope === 'subtree' ? subtreeIds(nodeId) : [nodeId]
+    const unitRows = ids.map((id) => rawNode(id)).filter((r) => READINESS_UNIT_TYPES.has(r.type))
+    // 非需求节点（项目 / 任务组）用自身作为锚点，保证页面在任何节点都可打开；
+    // 子树里有需求时，需求节点才是主线单元。
+    const units = (unitRows.length > 0 ? unitRows : [root]).map(nodeVO)
+    const stages = WORKFLOW_STAGES.map((s) => ({ ...s, items: [] }))
+    const nodes = [
+      {
+        id: `root:${root.id}`,
+        type: 'root',
+        label: root.name,
+        status: 'empty',
+        detail: effectiveScope === 'subtree' ? '含子树' : '仅本节点',
+        meta: { nodeId: root.id, nodeType: root.type, scope: effectiveScope }
+      }
+    ]
+    const edges = []
+
+    for (const stage of stages) {
+      nodes.push({
+        id: `stage:${stage.key}`,
+        type: 'stage',
+        stage: stage.key,
+        label: stage.label,
+        status: 'empty',
+        detail: stage.group === 'release' ? '上线与检查扩展段' : '研发主线',
+        meta: { group: stage.group }
+      })
+      edges.push({ from: `root:${root.id}`, to: `stage:${stage.key}`, kind: 'stage' })
+    }
+
+    const unitNodes = units.map((unit) => {
+      const id = `unit:${unit.id}`
+      nodes.push({
+        id,
+        type: 'unit',
+        unitId: unit.id,
+        label: unit.name,
+        status: 'pass',
+        detail: unit.path,
+        meta: { nodeType: unit.type }
+      })
+      edges.push({ from: `root:${root.id}`, to: id, kind: 'unit' })
+      return { ...unit, nodeId: id }
+    })
+
+    const branchItems = []
+    for (const unit of unitNodes) {
+      const docs = listDocuments(unit.id)
+      const cases = listTestCases(unit.id, {})
+      const reports = listTestReports(unit.id, { limit: 100 })
+      const acceptance = buildAcceptanceReport(unit.id)
+      const releaseItems = listReleaseItems(unit.id)
+      let readiness = null
+      if (READINESS_UNIT_TYPES.has(unit.type)) readiness = buildRequirementReadiness(unit.id)
+      const check = (key) => readiness && readiness.items.find((i) => i.key === key)
+
+      const requirementCheck = check('requirement_doc')
+      const designCheck = check('design_doc')
+      const docsFilled = docs.filter((d) => String(d.content || '').trim() !== '')
+      const regressionCases = cases.filter((c) => c.kind === 'regression' || c.kind === 'acceptance')
+      const codeCheckCases = cases.filter((c) => c.kind === 'code_check')
+      const bizCheckCases = cases.filter((c) => c.kind === 'biz_check')
+      const releaseCheckCases = cases.filter((c) => c.kind === 'release_check')
+      const releaseCheckItems = releaseItems.filter((i) => i.kind === 'check')
+      const releaseCheckItemSummary = mapReleaseItems(releaseCheckItems)
+      const codeCheckMeta = checkCasesMeta(codeCheckCases, latestReportsByCase(unit.id, 'code_check'))
+      const bizCheckMeta = checkCasesMeta(bizCheckCases, latestReportsByCase(unit.id, 'biz_check'))
+      const releaseCheckMeta = checkCasesMeta(releaseCheckCases, latestReportsByCase(unit.id, 'release_check'))
+      const releaseCheckStatus = workflowWorstStatus([
+        { status: releaseCheckItemSummary.status },
+        { status: workflowCheckStatus(releaseCheckMeta) }
+      ])
+
+      branchItems.push(
+        workflowItem({
+          stage: 'requirement',
+          unit,
+          status: requirementCheck ? (requirementCheck.passed ? 'pass' : 'fail') : docsFilled.length > 0 ? 'pass' : 'empty',
+          detail: requirementCheck ? requirementCheck.detail : docsFilled.length > 0 ? `已填写 ${docsFilled.length} 份文档` : '暂无需求正文'
+        }),
+        workflowItem({
+          stage: 'design',
+          unit,
+          status: designCheck ? (designCheck.passed ? 'pass' : 'fail') : 'empty',
+          detail: designCheck ? designCheck.detail : '需求节点才有概要设计门禁'
+        }),
+        workflowItem({
+          stage: 'documents',
+          unit,
+          // 空白预置文档只算“登记了文档”，不算通过证据。
+          status: docs.length === 0 ? 'empty' : docsFilled.length > 0 ? 'pass' : 'fail',
+          detail: `文档 ${docs.length} 份 · 已填写 ${docsFilled.length} 份`,
+          meta: { documents: docs.map((d) => ({ id: d.id, name: d.name, filled: String(d.content || '').trim() !== '' })) }
+        }),
+        workflowItem({
+          stage: 'mindmap',
+          unit,
+          status: 'pass',
+          detail: '已在本视图可视化'
+        }),
+        workflowItem({
+          stage: 'regression',
+          unit,
+          status: regressionCases.length > 0 ? 'pass' : 'empty',
+          detail: `可回归用例 ${regressionCases.length} 条`,
+          meta: { caseIds: regressionCases.map((c) => c.id), kinds: [...new Set(regressionCases.map((c) => c.kind))] }
+        }),
+        workflowItem({
+          stage: 'test_report',
+          unit,
+          status: reports.length === 0 ? 'empty' : workflowWorstStatus(reports.map((r) => ({ status: mapReportStatus(r.status) }))),
+          detail: reports.length === 0 ? '暂无报告' : `报告 ${reports.length} 条 · 最近 ${reports[0].status}`,
+          meta: { latestReportId: reports[0] ? reports[0].id : null }
+        }),
+        workflowItem({
+          stage: 'acceptance',
+          unit,
+          status:
+            acceptance.totals.cases === 0
+              ? 'empty'
+              : acceptance.totals.fail +
+                    acceptance.totals.blocked +
+                    acceptance.totals.error +
+                    acceptance.totals.cancelled +
+                    acceptance.totals.running +
+                    acceptance.totals.notRun >
+                  0
+                ? 'fail'
+                : 'pass',
+          detail:
+            acceptance.totals.cases === 0
+              ? '暂无验收样本'
+              : `用例 ${acceptance.totals.cases} · 通过率 ${acceptance.passRate == null ? '—' : Math.round(acceptance.passRate * 100) + '%'}`,
+          meta: acceptance.totals
+        }),
+        workflowItem({
+          stage: 'release_config',
+          unit,
+          ...mapReleaseItems(releaseItems.filter((i) => i.kind === 'config')),
+          meta: { releaseItems: releaseItemsMeta(releaseItems.filter((i) => i.kind === 'config')) }
+        }),
+        workflowItem({
+          stage: 'release_sql',
+          unit,
+          ...mapReleaseItems(releaseItems.filter((i) => i.kind === 'sql')),
+          meta: { releaseItems: releaseItemsMeta(releaseItems.filter((i) => i.kind === 'sql')) }
+        }),
+        workflowItem({
+          stage: 'release_check',
+          unit,
+          status: releaseCheckStatus,
+          detail:
+            releaseCheckItems.length === 0 && releaseCheckCases.length === 0
+              ? '暂无登记'
+              : `检查项 ${releaseCheckItems.length} 项 · 检查用例 ${releaseCheckCases.length} 条 · ${releaseCheckItemSummary.detail}`,
+          meta: {
+            caseIds: releaseCheckCases.map((c) => c.id),
+            releaseItems: releaseItemsMeta(releaseCheckItems),
+            checkCases: releaseCheckMeta
+          }
+        }),
+        workflowItem({
+          stage: 'code_check',
+          unit,
+          status: workflowCheckStatus(codeCheckMeta),
+          detail: codeCheckCases.length === 0 ? '暂无代码检查用例' : `代码检查用例 ${codeCheckCases.length} 条`,
+          meta: {
+            caseIds: codeCheckCases.map((c) => c.id),
+            checkCases: codeCheckMeta
+          }
+        }),
+        workflowItem({
+          stage: 'biz_check',
+          unit,
+          status: workflowCheckStatus(bizCheckMeta),
+          detail: bizCheckCases.length === 0 ? '暂无业务检查用例' : `业务检查用例 ${bizCheckCases.length} 条`,
+          meta: {
+            caseIds: bizCheckCases.map((c) => c.id),
+            checkCases: bizCheckMeta
+          }
+        })
+      )
+    }
+
+    for (const item of branchItems) {
+      nodes.push(item)
+      edges.push({ from: `stage:${item.stage}`, to: item.id, kind: 'branch' })
+      edges.push({ from: `unit:${item.unitId}`, to: item.id, kind: 'evidence' })
+    }
+
+    for (const stage of stages) {
+      const summary = workflowStageSummary(stage.key, branchItems)
+      stage.status = summary.status
+      stage.detail = summary.detail
+      stage.counts = summary.counts
+      stage.items = branchItems.filter((i) => i.stage === stage.key)
+      const node = nodes.find((n) => n.id === `stage:${stage.key}`)
+      if (node) {
+        node.status = stage.status
+        node.detail = stage.detail
+        node.meta.counts = stage.counts
+      }
+    }
+
+    // 根状态只聚合“证据阶段”，排除 mindmap 这类展示性阶段。
+    const rootStatus = workflowWorstStatus(
+      stages.filter((s) => WORKFLOW_EVIDENCE_STAGES.has(s.key)).map((s) => ({ status: s.status }))
+    )
+    const rootNode = nodes.find((n) => n.id === `root:${root.id}`)
+    if (rootNode) rootNode.status = rootStatus
+
+    const totals = {
+      stages: stages.length,
+      units: units.length,
+      branches: branchItems.length,
+      pass: branchItems.filter((i) => i.status === 'pass').length,
+      fail: branchItems.filter((i) => i.status === 'fail').length,
+      pending: branchItems.filter((i) => i.status === 'pending').length,
+      empty: branchItems.filter((i) => i.status === 'empty').length
+    }
+
+    return {
+      node: { id: root.id, name: root.name, type: root.type },
+      scope: effectiveScope,
+      status: rootStatus,
+      totals,
+      stages: stages.map((s) => ({
+        key: s.key,
+        label: s.label,
+        group: s.group,
+        status: s.status,
+        detail: s.detail,
+        counts: s.counts,
+        items: s.items
+      })),
+      units: unitNodes.map((u) => ({ nodeId: u.nodeId, id: u.id, name: u.name, type: u.type, path: u.path })),
+      nodes,
+      edges
+    }
+  }
+
   // ---------- agent 运行时管理（参考 multica agent_runtime / chat_session / agent_task_queue） ----------
   //
   // 三层模型：
@@ -4220,8 +4605,10 @@ export function createStore(db, options = {}) {
     buildAcceptanceStatus,
     // 需求就绪门禁（需求管理闭环的前置判定）
     SCOPE_VALUES,
+    FORMAT_VALUES,
     normalizeScope,
     FORMAT_VALUES,
+
     normalizeFormat,
     buildRequirementReadiness,
     // 概要设计大纲 / 思维导图（需求管理 → 概要设计 → 文档 的生成侧）
@@ -4252,6 +4639,9 @@ export function createStore(db, options = {}) {
     captureDeliverySnapshot,
     listDeliverySnapshots,
     getDeliverySnapshot,
+    // 研发主线思维导图（只读投影：需求 → 设计/文档 → 回归 → 报告 → 验收 → 上线治理）
+    WORKFLOW_STAGES,
+    buildWorkflowMap,
     // agent 运行时管理
     upsertRuntime,
     heartbeatRuntime,

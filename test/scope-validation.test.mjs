@@ -47,7 +47,8 @@ test('scope：聚合构建器全部拒绝非法值（不再静默降级 self）'
     ['buildRequirementReadiness', () => store.buildRequirementReadiness(r.id, { scope: 'Subtree' })],
     ['buildAcceptanceReport', () => store.buildAcceptanceReport(r.id, { scope: 'Subtree' })],
     ['buildReleaseChecklist', () => store.buildReleaseChecklist(r.id, { scope: 'Subtree' })],
-    ['buildDeliveryGate', () => store.buildDeliveryGate(r.id, { scope: 'Subtree' })]
+    ['buildDeliveryGate', () => store.buildDeliveryGate(r.id, { scope: 'Subtree' })],
+    ['buildWorkflowMap', () => store.buildWorkflowMap(r.id, { scope: 'Subtree' })]
   ]
   for (const [name, fn] of builders) {
     assert.throws(fn, /VALIDATION_FAILED/, `${name} 应当拒绝非法 scope`)
@@ -113,7 +114,7 @@ test('scope：MCP 聚合工具对非法 scope 报错（三入口契约一致）'
   })
   const p = store.createNode({ type: 'project', name: 'P' })
   const r = store.createNode({ parentId: p.id, type: 'requirement', name: 'R' })
-  for (const tool of ['requirement_readiness', 'acceptance_report', 'release_checklist', 'delivery_gate']) {
+  for (const tool of ['requirement_readiness', 'acceptance_report', 'release_checklist', 'delivery_gate', 'workflow_map']) {
     // handler 内统一业务校验：返回 isError + VALIDATION_FAILED，不泄漏 SDK -32602
     const out = await call(tool, { node: r.id, scope: 'Subtree' })
     assert.equal(out.isError, true, `${tool} 应当拒绝非法 scope`)

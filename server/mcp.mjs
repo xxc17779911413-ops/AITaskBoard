@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { openDb } from './db.mjs'
 import { createStore } from './store.mjs'
 import { loadConfig, saveConfig, maskToken } from './config.mjs'
-import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline, renderTestReportMd, setupWorkspace, getWorkspacePrompt, cleanupWorkspace, renderSecretScanMd, renderDeliverySnapshotMd, renderReleaseSqlAuditMd, renderCodeAuditMd, getNodeCodeAudit, renderBusinessGateMd } from './ops.mjs'
+import { buildSchema, renderTreeMd, upsertByPath, importOutline, applyBatch, getCommitDiff, getNodeDiffs, getCommitTrack, getNodeTracks, getCombinedDiff, getNodeDuplicates, runTestCases, renderAcceptanceMd, renderAcceptanceStatusMd, runReleaseChecks, renderReleaseChecklistMd, renderReadinessMd, renderMindmapMd, renderDeliveryGateMd, renderDesignOutlineMd, applyDesignOutline, renderTestReportMd, setupWorkspace, getWorkspacePrompt, cleanupWorkspace, renderSecretScanMd, renderDeliverySnapshotMd, renderReleaseSqlAuditMd, renderCodeAuditMd, getNodeCodeAudit, renderBusinessGateMd, renderWorkflowMapMd } from './ops.mjs'
 import { AppError, CODES } from './errors.mjs'
 import { startAgentRun, retryAndDispatch } from './agent.mjs'
 import { resolveRepoDir, pickBranchForCommit } from './git.mjs'
@@ -1129,6 +1129,26 @@ export function createMcpServer({ store }) {
       const n = store.resolveRef(String(node))
       const out = applyDesignOutline(store, n.id, { scope, overwrite: !!overwrite, dryRun: !!dryRun, by: 'mcp' })
       return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] }
+    })
+  )
+
+  server.tool(
+    'workflow_map',
+    '研发主线思维导图：把节点（含可选子树）投影为需求管理 → 概要设计/文档 → AI 可回归测试 → 测试报告 → 验收报告 → 上线配置/SQL/检查与代码/业务检查的只读图；format=md 返回可贴进 issue 的 markdown',
+    {
+      node: z.union([z.number(), z.string()]),
+      // scope / format 放宽到 any，让非字符串入参进入 handler，由 store.normalizeScope /
+      // normalizeFormat 统一报 VALIDATION_FAILED；z.enum 会在协议层先抛 -32602，
+      // 与 HTTP / CLI 的稳定错误契约不一致（横切口径见 scope-validation 用例）。
+      scope: z.any().optional(),
+      format: z.any().optional()
+    },
+    mcpValidate(async ({ node, scope, format }) => {
+      const n = store.resolveRef(String(node))
+      const normalized = store.normalizeFormat(format)
+      const map = store.buildWorkflowMap(n.id, { scope })
+      const text = normalized === 'md' ? renderWorkflowMapMd(map) : JSON.stringify(map, null, 2)
+      return { content: [{ type: 'text', text }] }
     })
   )
 

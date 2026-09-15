@@ -67,6 +67,7 @@ export const TOOLS = [
   'delivery_snapshot_capture',
   'delivery_snapshot_list',
   'delivery_snapshot_get',
+  'workflow_map',
   'release_item_list',
   'release_item_upsert',
   'release_item_update',
@@ -1898,6 +1899,37 @@ export function renderDeliverySnapshotMd(snapshot) {
 }
 
 /**
+ * 研发主线思维导图导出：把只读工作流投影渲染成 markdown，便于贴进 issue / 评审记录。
+ * 图上的分支结论来自现有数据，本函数只负责把“每条需求卡在哪一段”讲清楚。
+ */
+export function renderWorkflowMapMd(map) {
+  const statusLabels = { pass: '通过', fail: '未通过', pending: '待处理', empty: '暂无' }
+  const lines = [
+    `# 研发主线思维导图：${map.node.name}`,
+    '',
+    `- 范围：${map.scope === 'subtree' ? '含子树' : '仅本节点'}`,
+    `- 整体状态：${statusLabels[map.status] || map.status}`,
+    `- 阶段：${map.totals.stages} · 需求单元：${map.totals.units} · 分支项：${map.totals.branches}`,
+    `- 分支计数：通过 ${map.totals.pass} · 未通过 ${map.totals.fail} · 待处理 ${map.totals.pending} · 暂无 ${map.totals.empty}`,
+    '',
+    '| 阶段 | 状态 | 说明 |',
+    '|---|---|---|'
+  ]
+  for (const stage of map.stages) {
+    lines.push(`| ${stage.label} | ${statusLabels[stage.status] || stage.status} | ${stage.detail} |`)
+  }
+  const problemItems = (map.nodes || []).filter((n) => n.type === 'branch' && n.status !== 'pass')
+  if (problemItems.length > 0) {
+    lines.push('', '## 待关注分支', '', '| 需求 | 阶段 | 状态 | 说明 |', '|---|---|---|---|')
+    const stageLabels = Object.fromEntries(map.stages.map((s) => [s.key, s.label]))
+    for (const item of problemItems) {
+      lines.push(`| ${item.label} | ${stageLabels[item.stage] || item.stage} | ${statusLabels[item.status] || item.status} | ${item.detail} |`)
+    }
+  }
+  return lines.join('\n')
+}
+
+/**
  * 上线清单导出：把 buildReleaseChecklist 的聚合结果渲染成可贴进 issue / 上线单的 markdown。
  * 与 renderAcceptanceMd 同风格，便于一起贴进同一个验收 / 上线记录。
  */
@@ -2052,7 +2084,9 @@ export function runReleaseChecks(
   const checks = checkNodeIds
     .flatMap((nid) => store.listTestCases(nid, {}))
     .filter((c) => checkKinds.has(c.kind))
-    .filter((c) => (caseIds && caseIds.length ? caseIds.map(Number).includes(c.id) : true))
+    // 显式空数组表示“本次不选任何检查用例”，只执行已登记的上线清单；
+    // undefined/null 才表示不过滤。否则 UI 在“仅上线项”场景无法表达空集合。
+    .filter((c) => (Array.isArray(caseIds) ? caseIds.map(Number).includes(c.id) : true))
   const checklist = store.buildReleaseChecklist(node.id, { scope: effectiveScope })
   if (checks.length === 0 && checklist.items.length === 0) {
     // 若本节点没东西、但子树有，明确提示用 scope=subtree：避免「子树有上线项却没进检查」的误解

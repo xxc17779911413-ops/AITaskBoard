@@ -801,6 +801,36 @@ curl -s 'http://127.0.0.1:3210/api/nodes/1/code-audit?format=md'
 > 单条提交读取失败（仓库未登记 / 路径无效 / sha 不存在）记在 `items[].error`，不拖垮整体。
 > 纯读、不 fetch、不落表、不动 revision。
 
+## 研发主线思维导图（需求 → 设计 / 文档 → 回归 → 报告 → 验收 → 上线治理）
+
+```bash
+# JSON：查看某条需求在需求/设计/文档/回归/报告/验收/上线各阶段的分支状态
+curl -s 'http://127.0.0.1:3210/api/nodes/12/workflow-map?scope=self'
+
+# 含子树：把项目下所有需求两层投影到同一张图
+curl -s 'http://127.0.0.1:3210/api/nodes/1/workflow-map?scope=subtree'
+
+# Markdown：可直接贴进 issue / 评审记录
+curl -s 'http://127.0.0.1:3210/api/nodes/12/workflow-map?format=md'
+
+# CLI / MCP 等价入口
+# node bin/taskboard.js workflow map "项目A/需求1" [--scope self|subtree] [--format json|md]
+# MCP: workflow_map { node, scope?, format? }
+```
+
+> 分支状态：`pass` 已有证据且通过；`fail` 有数据但未通过 / 必做项未完成；
+> `pending` 执行中或等待结论；`empty` 尚未登记，**不等于通过**。
+> 纯读投影，不写库、不动 revision。
+>
+> `format` 只接受 `json` / `md`（缺省 `json`）；`xml` / `JSON` / 空串等非法值在
+> REST / CLI / MCP 统一返回 `VALIDATION_FAILED`（HTTP 400、CLI 非零、MCP `isError`），
+> 不会把拼错的格式静默当 JSON 消费。
+>
+> 图形接口返回的上线分支带稳定引用：上线项 `meta.releaseItems[*].id`、检查用例
+> `meta.checkCases[*].id` 与 `latestReportId`。Web「主线」面板使用这些引用显式调用
+> `PATCH /api/release-items/:rid`、`POST /api/nodes/:id/release-checks`、
+> `PATCH /api/test-reports/:rid`，写回后重新读取图。
+
 ## 错误码速查
 
 | HTTP | code | 场景 |

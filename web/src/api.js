@@ -95,6 +95,31 @@ export default {
   // 业务检查门禁
   businessGate: (nodeId, scope) => api(`/nodes/${nodeId}/business-gate?scope=${scope || 'self'}`),
 
+  // 研发主线思维导图
+  workflowMap: (nodeId, scope) => api(`/nodes/${nodeId}/workflow-map?scope=${scope || 'self'}`),
+
+  // 上线治理（同步自既有 release_* / test_* 接口）
+  releaseItems: (nodeId, params = {}) => {
+    const qs = new URLSearchParams()
+    if (params.kind) qs.set('kind', params.kind)
+    if (params.status) qs.set('status', params.status)
+    if (params.includeOptional !== undefined) qs.set('includeOptional', String(params.includeOptional))
+    const query = qs.toString()
+    return api(`/nodes/${nodeId}/release-items${query ? `?${query}` : ''}`)
+  },
+  releaseChecklist: (nodeId, scope) => api(`/nodes/${nodeId}/release-checklist?scope=${scope || 'self'}`),
+  releaseItemUpdate: (rid, data) => api(`/release-items/${rid}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  releaseCheck: (nodeId, data) => api(`/nodes/${nodeId}/release-checks`, { method: 'POST', body: JSON.stringify(data) }),
+  testReports: (nodeId, params = {}) => {
+    const qs = new URLSearchParams()
+    if (params.caseId) qs.set('caseId', String(params.caseId))
+    if (params.kind) qs.set('kind', params.kind)
+    if (params.limit) qs.set('limit', String(params.limit))
+    const query = qs.toString()
+    return api(`/nodes/${nodeId}/test-reports${query ? `?${query}` : ''}`)
+  },
+  testReportFinish: (rid, data) => api(`/test-reports/${rid}`, { method: 'PATCH', body: JSON.stringify(data) }),
+
   // commit
   commitList: (nodeId, subtree) => api(`/nodes/${nodeId}/commits${subtree ? '?subtree=true' : ''}`),
   commitAdd: (nodeId, data) => api(`/nodes/${nodeId}/commits`, { method: 'POST', body: JSON.stringify(data) }),
