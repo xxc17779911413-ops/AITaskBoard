@@ -364,27 +364,39 @@ export async function previewMerge(dir, source, target) {
       }
     }
   }
-  // 用 --name-only：Git 2.39+ 的裸 --write-tree 会输出 stage 行（含 oid/mode），
-  // 直接当文件名落库会把「100644 <sha> 1\tpath」整行写进 conflict_files。
-  const mt = await gitTry(dir, ['merge-tree', '--write-tree', '--name-only', target, source])
+  // 用 -z + --name-only：
+  // ① 裸 --write-tree 会输出 stage 行（含 oid/mode），直接当文件名落库会混入非路径；
+  // ② 非 -z 输出会对非 ASCII / 特殊字符做 C 风格引号转义，落库后无法直接用于文件操作；
+  //    -z 用 NUL 分隔且不做引号转义，路径原样 UTF-8。
+  const mt = await gitTry(dir, ['merge-tree', '--write-tree', '--name-only', '-z', target, source])
   let conflicted = false
   const conflictFiles = []
   // gitTry 以退出码非 0 返回 ok:false；`merge-tree` 有冲突时正是 exit=1，
-  // 旧判定 `mt.ok && mt.code !== 0` 因此永远拿不到冲突文件清单。
-  const output = String(mt.stdout || '').trim()
+  // 冲突清单写在 stdout 上，必须保留（不能按「命令成功」丢弃）。
+  const output = String(mt.stdout || '')
   if (!mt.ok && mt.code !== 0 && output) {
     conflicted = true
-    for (const line of output.split('\n').slice(1)) {
-      const t = line.trim()
-      if (!t) continue
-      // stdout 末尾会混入 "Auto-merging ..." / "CONFLICT ..." 的人类可读信息；
-      // 冲突文件清单只保留真正的路径行（stage 行即使未加 --name-only 也不会误收）。
-      if (/^(Auto-merging|CONFLICT|CONFLICT \()/i.test(t)) continue
-      if (/^\d{6} [0-9a-f]+ [123]\t/.test(t)) {
-        conflictFiles.push(t.split('\t').slice(1).join('\t').replace(/\x00.*$/, ''))
-        continue
+    // `-z` 结构：首条记录是 tree oid，随后是冲突路径，直到空记录进入信息区。
+    // 这个分界比「文本前缀过滤」可靠：conflict.txt / Auto-merging.md / 非 ASCII
+    // 路径都不会被误判成信息行（N2/N3）。
+    const records = output.split('\0')
+    for (let i = 1; i < records.length; i += 1) {
+      const rec = records[i]
+      if (rec === '') break
+      conflictFiles.push(rec)
+    }
+    // 兼容不支持 `-z` 的旧 git（或实现返回非 NUL 输出）：退回按空行分界。
+    if (conflictFiles.length === 0 && output.includes('\n')) {
+      const lines = output.trim().split('\n')
+      for (const line of lines.slice(1)) {
+        const t = line.trim()
+        if (t === '') break
+        if (/^\d{6} [0-9a-f]+ [123]\t/.test(t)) {
+          conflictFiles.push(t.split('\t').slice(1).join('\t'))
+          continue
+        }
+        conflictFiles.push(t)
       }
-      conflictFiles.push(t.replace(/\x00.*$/, ''))
     }
   }
   return {
@@ -453,7 +465,11 @@ export async function branchLogShas(dir, branch, maxCount = 5000) {
 /**
  * 主仓库合并：把 source 合入 target（--no-ff）。
  * 前置安全判定：① 当前工作区无未解决冲突（UU/AA/DD 等）② 能切到 target。
- * 返回：{ ok, alreadyMerged?, conflict?, reason?, unmerged?, mergeSha?, message? }
+ *
+ * HEAD 处理：合并必须在 target 分支上执行，但调用方常常从别的分支发起（例如
+ * 保持在工作分支上）；成功合并后尽量 checkout 回原 HEAD，避免把用户留在集成分支。
+ * 冲突时不切回——保留现场供人工/AI 解决。
+ * 返回：{ ok, alreadyMerged?, conflict?, reason?, unmerged?, mergeSha?, message?, restoredHead? }
  */
 export async function mergeBranch(dir, source, target, message) {
   // ① 未解决冲突检查
@@ -472,6 +488,9 @@ export async function mergeBranch(dir, source, target, message) {
   if (anc.ok && anc.code === 0) {
     return { ok: true, alreadyMerged: true, reason: 'already_merged' }
   }
+  // 记住发起前的 HEAD（分支名或 sha），成功后恢复；detached HEAD 也能安全恢复。
+  const prevHead = await gitTry(dir, ['rev-parse', '--abbrev-ref', 'HEAD'])
+  const previous = prevHead.ok ? prevHead.stdout.trim() : ''
   // ③ 切到 target
   const co = await gitTry(dir, ['checkout', target])
   if (!co.ok) {
@@ -481,7 +500,15 @@ export async function mergeBranch(dir, source, target, message) {
   const m = await gitTry(dir, ['merge', '--no-ff', source, '-m', message || `merge: ${source} -> ${target}`])
   if (m.ok) {
     const head = await gitTry(dir, ['rev-parse', 'HEAD'])
-    return { ok: true, mergeSha: head.ok ? head.stdout.trim() : null, message: String(m.stdout || '').slice(0, 500) }
+    const mergeSha = head.ok ? head.stdout.trim() : null
+    let restoredHead = null
+    if (previous && previous !== 'HEAD' && previous !== target) {
+      const back = await gitTry(dir, ['checkout', previous])
+      restoredHead = back.ok ? previous : null
+    } else if (previous === target) {
+      restoredHead = target
+    }
+    return { ok: true, mergeSha, restoredHead, message: String(m.stdout || '').slice(0, 500) }
   }
   const out = String(m.stderr || '') + String(m.stdout || '')
   const conflicted = /CONFLICT|Automatic merge failed/i.test(out)

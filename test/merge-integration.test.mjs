@@ -126,6 +126,20 @@ function makeConflict(repo) {
   repo.g(['commit', '-q', '-m', 'source change'])
 }
 
+function makeNamedConflict(repo, name) {
+  fs.writeFileSync(path.join(repo.dir, name), 'base\n')
+  repo.g(['add', '.'])
+  repo.g(['commit', '-q', '-m', `base ${name}`])
+  repo.g(['checkout', '-q', 'feature-send-receive'])
+  fs.writeFileSync(path.join(repo.dir, name), 'target\n')
+  repo.g(['add', '.'])
+  repo.g(['commit', '-q', '-m', `target ${name}`])
+  repo.g(['checkout', '-q', 'feature-send-receive-login'])
+  fs.writeFileSync(path.join(repo.dir, name), 'source\n')
+  repo.g(['add', '.'])
+  repo.g(['commit', '-q', '-m', `source ${name}`])
+}
+
 test('store merges：状态机 CRUD 与 state 校验', async (t) => {
   const { tmp, store, task } = await setup({ withRepo: false })
   t.after(() => tmp.cleanup())
@@ -156,6 +170,17 @@ test('store merges：状态机 CRUD 与 state 校验', async (t) => {
   assert.equal(resolved.state, 'resolved')
   assert.equal(resolved.mergeSha, 'abcdef1')
   assert.throws(() => store.confirmMerge(resolved.id, { mergeSha: 'zz' }), (e) => e.code === 'VALIDATION_FAILED')
+
+  // N4：不拿预检 target_sha 冒充 merge_sha；已 merged 的行拒绝 confirm 降级
+  const noSha = store.addMerge(task.id, {
+    repo: 'demo',
+    sourceBranch: 'feature-x',
+    targetBranch: 'feature-y',
+    targetSha: 'targetsha',
+    state: 'precheck_conflict'
+  })
+  assert.equal(store.confirmMerge(noSha.id).mergeSha, null)
+  assert.throws(() => store.confirmMerge(row.id), (e) => e.code === 'VALIDATION_FAILED')
 
   const aborted = store.abortMerge(resolved.id)
   assert.equal(aborted.state, 'aborted')
@@ -211,6 +236,39 @@ test('ops merge：无冲突时 merge --no-ff 并落 merged 行；已合入幂等
   assert.equal(again.merged.length, 1)
   assert.equal(again.merged[0].alreadyMerged, true)
   assert.equal(store.listMerges({ nodeId: task.id, state: 'merged' }).length, 2)
+})
+
+test('ops merge：合并成功后恢复发起前的 HEAD（不在集成分支留下用户）', async (t) => {
+  const { tmp, store, ops, repo, task } = await setup()
+  t.after(() => {
+    tmp.cleanup()
+    fs.rmSync(repo.root, { recursive: true, force: true })
+  })
+  // 发起合同时 HEAD 在第三个分支（不是 source、也不是 target）
+  repo.g(['branch', 'third', 'feature-send-receive'])
+  repo.g(['checkout', '-q', 'third'])
+
+  const out = await ops.runMerge(store, task.id, { confirm: true })
+  assert.equal(out.merged.length, 1)
+  assert.equal(repo.g(['rev-parse', '--abbrev-ref', 'HEAD']).trim(), 'third', '成功后应恢复原 HEAD')
+  assert.equal(out.merged[0].restoredHead, 'third')
+  repo.g(['merge-base', '--is-ancestor', 'feature-send-receive-login', 'feature-send-receive'])
+})
+
+test('ops merge：冲突清单按分隔符解析——前缀型 / 大小写型 / 非 ASCII 路径都不丢（N2/N3 回归）', async (t) => {
+  for (const name of ['conflict.txt', 'ConflictPane.vue', 'Auto-merging.md', '中文.txt']) {
+    const { tmp, store, ops, repo, task } = await setup()
+    t.after(() => {
+      tmp.cleanup()
+      fs.rmSync(repo.root, { recursive: true, force: true })
+    })
+    makeNamedConflict(repo, name)
+    const out = await ops.runMerge(store, task.id, { confirm: true })
+    assert.equal(out.conflicts.length, 1, `${name} 应产生冲突`)
+    assert.deepEqual(out.conflicts[0].conflictFiles, [name], `${name} 必须原样落库，不被前缀过滤或引号转义`)
+    const row = store.listMerges({ nodeId: task.id, state: 'precheck_conflict' })[0]
+    assert.deepEqual(row.conflictFiles, [name])
+  }
 })
 
 test('ops merge：缺 confirm / 分支缺失 / 类型非法给稳定错误码', async (t) => {

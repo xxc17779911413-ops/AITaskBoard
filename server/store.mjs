@@ -1151,13 +1151,15 @@ export function createStore(db, options = {}) {
   function confirmMerge(id, { mergeSha = null } = {}, by = 'user') {
     const cur = db.prepare('SELECT * FROM merges WHERE id = ?').get(Number(id))
     if (!cur) throw new AppError(CODES.NOT_FOUND, `合并记录 ${id} 不存在`, { id })
-    if (cur.state === 'aborted') {
-      throw new AppError(CODES.VALIDATION_FAILED, '已放弃的合并记录不能确认完成', { id: cur.id, state: cur.state })
+    if (cur.state === 'aborted' || cur.state === 'merged') {
+      throw new AppError(CODES.VALIDATION_FAILED, `状态为 ${cur.state} 的合并记录不能确认完成`, { id: cur.id, state: cur.state })
     }
     if (mergeSha && !SHA_RE.test(String(mergeSha))) {
       throw new AppError(CODES.VALIDATION_FAILED, 'mergeSha 必须是 7–40 位十六进制', { mergeSha })
     }
-    const nextSha = mergeSha || cur.merge_sha || cur.target_sha || null
+    // N4：不拿预检时的 target_sha 冒充「本地已应用后的提交」。未显式给 mergeSha
+    // 就保持为空，避免审计字段指向合并前的旧目标 sha。
+    const nextSha = mergeSha || cur.merge_sha || null
     db.prepare('UPDATE merges SET state = ?, merge_sha = ?, updated_at = ?, updated_by = ? WHERE id = ?')
       .run('resolved', nextSha, now(), actor(by), cur.id)
     bumpRevision()

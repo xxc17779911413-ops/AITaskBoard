@@ -1753,7 +1753,7 @@ export async function runMerge(store, nodeRef, { repo = null, confirm = false, d
         },
         by
       )
-      merged.push({ ...row, message: result.message || null })
+      merged.push({ ...row, message: result.message || null, restoredHead: result.restoredHead || null })
       continue
     }
     if (result.conflict) {

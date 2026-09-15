@@ -2,7 +2,7 @@
 
 ## 模块位置
 
-- `server/git.mjs`：`previewMerge`（`merge-tree --write-tree --name-only`）、`mergeBranch`、`revParse` / `mergeBase`
+- `server/git.mjs`：`previewMerge`（`merge-tree --write-tree --name-only -z`）、`mergeBranch`（成功后恢复原 HEAD）、`revParse` / `mergeBase`
 - `merges` 表（§4.11，已在 `db.mjs` 建表）
 - `unit_repos` 表（§4.12）：决定工作单元覆盖哪些仓库
 - `server/store.mjs`：`merges` CRUD（`listMerges` / `addMerge` / `confirmMerge` / `abortMerge`）
@@ -11,8 +11,9 @@
 
 ## 设计要点
 
-- **预检**：`git merge-tree --write-tree --name-only <target> <source>`（纯内存三方合并）。
-  exit=1 即冲突；stdout 第一行是 tree oid，之后是冲突文件路径（跳过 `Auto-merging` / `CONFLICT` 说明行）；
+- **预检**：`git merge-tree --write-tree --name-only -z <target> <source>`（纯内存三方合并）。
+  exit=1 即冲突；stdout 是 NUL 分隔记录：首条 tree oid，随后是冲突路径，空记录后进入说明区；
+  用分隔符而不是文本前缀判断，天然支持 `conflict.txt` / `ConflictPane.vue` / `Auto-merging.md` / 非 ASCII 路径；
   不写工作区、不建 commit
 - **执行合并**：在目标分支上 `git merge --no-ff <source_branch>`；失败则报告 stderr 并保持原状
 - **一次合并 = 按仓库各写一行 `merges`**（`source_branch` / `target_branch` / 三个 sha / `state`）
@@ -31,9 +32,19 @@
 **R3 `confirm` / `abort` 不直接改分支**：`confirm` 只回填 `merge_sha` 并置 `resolved`（表示本地已应用）；
 `abort` 只置 `aborted`（不改任何分支）。真正的冲突应用由人或 AI 在本地完成。
 
-**R4 `merge-tree` 输出解析必须带 `--name-only`**：Git 2.39+ 的裸 `--write-tree` 会输出
-`100644 <oid> <stage>\tpath` 的 stage 行；直接按行取文件名会把 oid/阶段一并写进 `conflict_files`。
+**R4 `merge-tree` 输出解析必须用 `--name-only -z`（N2/N3 回归点）**：Git 2.39+ 的裸 `--write-tree`
+会输出 `100644 <oid> <stage>\tpath` 的 stage 行；非 `-z` 输出还会对非 ASCII 路径做 C 风格引号转义。
+改按 NUL 分隔解析后，冲突路径原样 UTF-8 落库，且不需要猜「哪些行是说明行」——
+`conflict.txt` / `ConflictPane.vue` / `Auto-merging.md` 这类文件名不会因前缀匹配被误删。
 同时 `gitTry` 在非零退出时也要透传 stdout——`merge-tree` 的冲突清单正是写在 stdout 上。
+
+**R5 `confirm` 只服务冲突行（N4 回归点）**：`merged` 是已完成的合并尝试，不能再 `confirm`
+降级成 `resolved`；`aborted` 同样不可确认。冲突行若调用方没有显式给 `mergeSha`，
+`merge_sha` 保持为空，不拿预检时的 `target_sha` 冒充「本地已应用后的提交」，避免审计字段误导。
+
+**R6 合并成功恢复原 HEAD（已知风险 #2）**：`mergeBranch` 为执行 `merge --no-ff` 必须 checkout
+到集成分支，但会在成功后尽量 checkout 回发起前的 HEAD，并在返回值里显式回报 `restoredHead`；
+冲突时不切回，保留现场供人工/AI 处理。
 
 ## 关联
 

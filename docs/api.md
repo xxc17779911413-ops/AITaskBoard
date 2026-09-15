@@ -389,7 +389,7 @@ curl -s -X POST http://127.0.0.1:3210/api/nodes/9/cleanup \
 # MCP: unit_setup / unit_prompt / unit_cleanup
 
 # 代码集成（显式合并）：预检 → 合并 / 冲突挂起 → 确认 / 放弃（全程不 push）
-# 预检只读：merge-tree --write-tree --name-only，不改分支、不落库
+# 预检只读：merge-tree --write-tree --name-only -z，不改分支、不落库
 # node bin/taskboard.js merge precheck "项目A/需求1/任务1" [--repo <名>]
 # node bin/taskboard.js merge run "项目A/需求1/任务1" --confirm [--repo <名>]
 # node bin/taskboard.js merge list --status precheck_conflict
@@ -424,6 +424,10 @@ HTTP / MCP 传 `removeBranch: false`、CLI 传 `--keep-branch` 可显式保留�
 | 400 | `BRANCH_NOT_FOUND` | source / target 分支不存在 |
 | 400 | `REPO_PATH_MISSING` | 登记仓库没有本地路径 |
 | 200 | `MERGE_CONFLICT`（在 `conflicts[]` 中） | 预检有冲突：落 `precheck_conflict` 行 + `conflict_files`，**不改分支** |
+
+冲突清单按 `merge-tree --name-only -z` 的 NUL 分隔解析，路径原样落库；
+`conflict.txt` / `ConflictPane.vue` / `Auto-merging.md` / 非 ASCII 路径都不会被误删或转义。
+`merge confirm` 只服务冲突行；未显式给 `mergeSha` 时不会用预检 `target_sha` 冒充。
 
 ## agent 运行时 / 会话 / 任务
 
